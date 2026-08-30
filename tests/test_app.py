@@ -218,6 +218,74 @@ def test_close_event_retries_the_stop_when_already_pending(window, monkeypatch):
     assert routed, "재시도된 정지 요청이 브리지를 거치지 않았다"
 
 
+# ---------------- I5: 기간 · 상한 · 속도 제한도 config.json에 저장된다 ----------------
+
+
+def test_save_and_reload_persists_settings_beyond_account_and_keywords(
+    app, tmp_path, monkeypatch
+):
+    """스펙 §6.5: 키워드 · 기간 · 방문 상한 · 블로그당 공감 수 · 속도 제한 ·
+    제외 단어 전부가 config.json에 남아야 한다. 특히 속도 제한(§7.3)이
+    저장되지 않으면 조심스럽게 낮춰 둔 값이 다음 실행마다 조용히
+    기본값(6.0)으로 되돌아간다."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    from desktop.app import MainWindow
+    from engine.config import RunConfig
+
+    win1 = MainWindow()
+    config, errors = RunConfig.validate({
+        "account": "acct",
+        "keywords": ["kw1"],
+        "excludes": ["ex1"],
+        "start_date": "2026-01-01",
+        "end_date": "2026-01-02",
+        "blog_limit": 42,
+        "likes_per_blog": 2,
+        "likes_per_minute": 3.5,
+        "dry_run": False,
+    })
+    assert errors == []
+    win1._save_config(config)
+    win1.close()
+
+    win2 = MainWindow()
+    assert win2.start_date_input.text() == "2026-01-01"
+    assert win2.end_date_input.text() == "2026-01-02"
+    assert win2.blog_limit_input.value() == 42
+    assert win2.likes_input.value() == 2
+    assert win2.rate_input.value() == 3.5
+    win2.close()
+
+
+def test_dry_run_is_never_written_to_the_config_file(app, tmp_path, monkeypatch):
+    """문자열로 왕복하면 "False"가 truthy가 되는 함정이 있으므로 dry_run은
+    아예 파일에 담지 않는다."""
+    import json
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    from desktop.app import MainWindow
+    from engine.config import RunConfig
+
+    win = MainWindow()
+    config, errors = RunConfig.validate({
+        "account": "acct",
+        "keywords": ["kw1"],
+        "excludes": [],
+        "start_date": "2026-01-01",
+        "end_date": "2026-01-02",
+        "blog_limit": 1,
+        "likes_per_blog": 1,
+        "likes_per_minute": 1.0,
+        "dry_run": True,
+    })
+    assert errors == []
+    win._save_config(config)
+    win.close()
+
+    saved = json.loads(win.paths.config_file.read_text(encoding="utf-8"))
+    assert "dry_run" not in saved
+
+
 # ---------------- I3: 드라이런 요약은 눈에 띄게 표시되어야 한다 ----------------
 
 

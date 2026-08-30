@@ -180,6 +180,24 @@ class MainWindow(QMainWindow):
                 for panel, kw in zip(self.panels, saved.get("keywords", [])):
                     panel.keyword_input.setText(kw)
                 self.exclude_input.setText(", ".join(saved.get("excludes", [])))
+                # I5: 스펙 §6.5는 config.json에 키워드 · 기간 · 방문 상한 ·
+                # 블로그당 공감 수 · 속도 제한 · 제외 단어를 담으라고 명시한다.
+                # 특히 속도 제한은 §7.3에 따라 운영하며 조정해야 하는 값이라,
+                # 저장하지 않으면 조심스럽게 낮춰 둔 값이 실행할 때마다
+                # 기본값(6.0)으로 조용히 되돌아가고 다음 실행이 의도보다
+                # 빨리 돈다. .get()의 기본값은 폼 위젯이 이미 들고 있는
+                # 기본값과 같으므로, 키가 없어도(예: 옛 config.json) 조용히
+                # 지금 상태를 유지한다.
+                if "start_date" in saved:
+                    self.start_date_input.setText(str(saved["start_date"]))
+                if "end_date" in saved:
+                    self.end_date_input.setText(str(saved["end_date"]))
+                if "blog_limit" in saved:
+                    self.blog_limit_input.setValue(int(saved["blog_limit"]))
+                if "likes_per_blog" in saved:
+                    self.likes_input.setValue(int(saved["likes_per_blog"]))
+                if "likes_per_minute" in saved:
+                    self.rate_input.setValue(float(saved["likes_per_minute"]))
         except Exception:
             pass    # 설정 파일이 깨져도 앱은 떠야 한다
 
@@ -196,6 +214,11 @@ class MainWindow(QMainWindow):
                     "account": config.account,
                     "keywords": config.keywords,
                     "excludes": config.excludes,
+                    "start_date": config.start_date,
+                    "end_date": config.end_date,
+                    "blog_limit": config.blog_limit,
+                    "likes_per_blog": config.likes_per_blog,
+                    "likes_per_minute": config.likes_per_minute,
                 },
                 ensure_ascii=False,
                 indent=2,
