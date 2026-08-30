@@ -1,0 +1,14 @@
+# 자격증명 · 세션 — 절대 커밋 금지
+accounts.csv
+**/accounts.csv
+session.dat
+storage_state.json
+data/
+*.db
+
+# 빌드 산출물
+build/
+dist/
+*.exe
+__pycache__/
+*.py[cod]
