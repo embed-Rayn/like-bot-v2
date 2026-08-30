@@ -260,6 +260,43 @@ async def test_not_logged_in_aborts_immediately(tmp_path):
     assert calls["n"] == 1                # 한 번만 시도하고 즉시 중단
 
 
+# ---- MINOR: SearchPage.dropped must actually be surfaced ----
+
+async def test_page_collected_carries_the_dropped_count(tmp_path):
+    class PartiallyDroppedSearch:
+        async def iter_pages(self, query, start_date, end_date, first_page=1):
+            items = [SearchItem(blog_id="b1", log_no="100", title="t",
+                                blog_name="b", add_date_ms=0)]
+            yield 1, SearchPage(items=items, total_count=99, per_page=7, raw_count=3)
+
+    events = []
+    runner, history = _runner(tmp_path, _config(tmp_path), PartiallyDroppedSearch(),
+                              await _always(LikeOutcome.SUCCESS), events)
+    await runner.run()
+    history.close()
+
+    from engine.events import PageCollected, LogLine
+
+    collected = [e for e in events if isinstance(e, PageCollected)]
+    assert collected[0].dropped == 2   # raw_count(3) - len(items)(1)
+
+    dropped_logs = [e for e in events if isinstance(e, LogLine) and "형식 오류" in e.text]
+    assert len(dropped_logs) == 1
+
+
+async def test_page_collected_does_not_log_when_nothing_was_dropped(tmp_path):
+    from engine.events import LogLine
+
+    events = []
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path), search,
+                              await _always(LikeOutcome.SUCCESS), events)
+    await runner.run()
+    history.close()
+
+    assert not [e for e in events if isinstance(e, LogLine) and "형식 오류" in e.text]
+
+
 # ---- I6: TIMEOUT is retried exactly once, per spec 7.1 ----
 
 async def test_timeout_is_retried_once_and_recovers(tmp_path):

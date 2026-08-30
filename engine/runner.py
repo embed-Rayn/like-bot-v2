@@ -102,7 +102,18 @@ class Runner:
                 self._emit(PageCollected(
                     keyword=keyword, page=page_no, found=len(page.items),
                     queued=queued, total_count=page.total_count,
+                    dropped=page.dropped,
                 ))
+                # MINOR: SearchPage.dropped는 지금까지 아무도 읽지 않았다.
+                # 7건 중 3건이 필수 필드 누락으로 못 쓰게 됐어도 완전히
+                # 조용했다 (전부 걸러진 경우만 SearchParseError로 올라온다).
+                # 부분적으로 걸러지는 것도 눈에 띄어야 네이버 응답 형식이
+                # 바뀌기 시작하는 초기 징후를 놓치지 않는다.
+                if page.dropped:
+                    self._emit(LogLine(
+                        keyword,
+                        f"{page_no}페이지: {page.dropped}건이 형식 오류로 제외됨",
+                    ))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -17,9 +17,10 @@ class WorkerStarted:
 class PageCollected:
     keyword: str
     page: int
-    found: int          # 응답에 들어 있던 건수
-    queued: int         # 중복 제거 후 큐에 넣은 건수
+    found: int          # 필터링(필수 필드 확인) 후 사용 가능했던 건수
+    queued: int         # found 중 중복 제거 후 큐에 넣은 건수
     total_count: int    # 검색 API의 totalCount (1000이면 상한)
+    dropped: int = 0    # 필수 필드 누락으로 걸러진 건수 (SearchPage.dropped)
 
 
 @dataclass(frozen=True)
