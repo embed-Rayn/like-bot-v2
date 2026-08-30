@@ -218,6 +218,54 @@ def test_close_event_retries_the_stop_when_already_pending(window, monkeypatch):
     assert routed, "재시도된 정지 요청이 브리지를 거치지 않았다"
 
 
+# ---------------- MINOR: 하드코딩 대신 engine의 공유 상수/값을 쓴다 ----------------
+
+
+def test_page_collected_shows_plus_suffix_at_the_shared_cap(window):
+    from engine.events import PageCollected
+    from engine.models import TOTAL_COUNT_CAP
+
+    window.panels[0].keyword_input.setText("kw1")
+    window.on_event(PageCollected(
+        keyword="kw1", page=1, found=7, queued=7, total_count=TOTAL_COUNT_CAP,
+    ))
+
+    assert f"{TOTAL_COUNT_CAP}+" in window.panels[0].status_label.text()
+
+
+def test_page_collected_has_no_plus_suffix_below_the_cap(window):
+    from engine.events import PageCollected
+    from engine.models import TOTAL_COUNT_CAP
+
+    window.panels[0].keyword_input.setText("kw1")
+    window.on_event(PageCollected(
+        keyword="kw1", page=1, found=7, queued=7, total_count=TOTAL_COUNT_CAP - 1,
+    ))
+
+    assert "+" not in window.panels[0].status_label.text()
+
+
+def test_like_result_event_uses_the_shared_outcome_values(window):
+    """LikeOutcome.SUCCESS/ALREADY_LIKED와 어긋난 문자열 리터럴이 아니라 실제
+    enum 값을 기준으로 성공/이미공감을 걸러내는지 확인한다."""
+    from engine.events import LikeResultEvent
+    from engine.models import LikeOutcome
+
+    window.panels[0].keyword_input.setText("kw1")
+
+    window.on_event(LikeResultEvent(keyword="kw1", blog_id="b1", log_no="1",
+                                    outcome=LikeOutcome.SUCCESS.value))
+    window.on_event(LikeResultEvent(keyword="kw1", blog_id="b2", log_no="2",
+                                    outcome=LikeOutcome.ALREADY_LIKED.value))
+    window.on_event(LikeResultEvent(keyword="kw1", blog_id="b3", log_no="3",
+                                    outcome=LikeOutcome.ERROR.value))
+
+    text = window.panels[0].log_view.toPlainText()
+    assert "b1/1" not in text
+    assert "b2/2" not in text
+    assert "b3/3" in text
+
+
 # ---------------- MINOR: LikeResultEvent는 자기 키워드 패널로만 간다 ----------------
 
 

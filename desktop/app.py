@@ -43,6 +43,7 @@ from engine.events import (
 )
 from engine.history import History
 from engine.like import press_like
+from engine.models import TOTAL_COUNT_CAP, LikeOutcome
 from engine.paths import AppPaths
 from engine.posts import PostsClient
 from engine.ratelimit import RateLimiter
@@ -375,7 +376,10 @@ class MainWindow(QMainWindow):
         elif isinstance(event, PageCollected):
             panel = self._panel_for(event.keyword)
             if panel:
-                total = f"{event.total_count}{'+' if event.total_count >= 1000 else ''}"
+                # MINOR: engine.models.TOTAL_COUNT_CAP/SearchPage.is_capped와
+                # 같은 값을 여기서 다시 하드코딩하지 않는다 — 둘이 어긋나면
+                # 상한 표기가 조용히 틀려진다.
+                total = f"{event.total_count}{'+' if event.total_count >= TOTAL_COUNT_CAP else ''}"
                 panel.set_status(f"{event.page}페이지 · 총 {total}건")
                 panel.append_log(
                     f"{event.page}페이지: {event.found}건 중 {event.queued}건 신규"
@@ -392,7 +396,9 @@ class MainWindow(QMainWindow):
             # MINOR: LikeResultEvent가 이제 키워드를 들고 있으므로 실제
             # 해당 패널로 보낸다. 예전에는 항상 panels[0]에서 멈춰
             # (for/break) 모든 키워드의 실패가 1번 패널에만 쌓였다.
-            if event.outcome not in ("success", "already_liked"):
+            # MINOR: LikeOutcome enum의 .value와 어긋날 수 있는 문자열
+            # 리터럴을 다시 쓰지 않는다.
+            if event.outcome not in (LikeOutcome.SUCCESS.value, LikeOutcome.ALREADY_LIKED.value):
                 panel = self._panel_for(event.keyword)
                 if panel:
                     panel.append_log(f"{event.blog_id}/{event.log_no} → {event.outcome}")
