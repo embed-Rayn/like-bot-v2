@@ -45,10 +45,18 @@ def test_append_log_accumulates(app):
 
 
 def test_alert_is_visible_only_when_set(app):
-    """폴백·차단 경고는 눈에 띄어야 한다 — 조용히 잘리지 않게."""
+    """폴백·차단 경고는 눈에 띄어야 한다 — 조용히 잘리지 않게.
+
+    isVisible()은 panel 자체가 화면에 show()되지 않으면(이 테스트에서는
+    그렇다) 항상 False라서, set_alert에서 setVisible 호출을 지워도 첫
+    assert가 여전히 통과했다. isVisibleTo(panel)은 '부모(panel)가 보이게
+    되면 이 위젯도 보일 것인가'를 판정하므로 명시적 hide/show 상태를
+    실제로 검증한다.
+    """
     panel = KeywordPanel(1)
-    assert panel.alert_label.isVisible() is False
+    assert panel.alert_label.isVisibleTo(panel) is False
     panel.set_alert("네이버 응답 형식이 바뀐 것 같습니다")
+    assert panel.alert_label.isVisibleTo(panel) is True
     assert panel.alert_label.text() != ""
 
 
