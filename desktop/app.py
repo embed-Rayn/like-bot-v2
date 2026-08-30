@@ -86,6 +86,11 @@ class MainWindow(QMainWindow):
         # 채 finished/failed가 실제로 올 때까지 기다린다. 그래야 _run_engine의
         # finally가 브라우저 세션을 정상적으로 닫는다.
         self._close_pending = False
+        # CRITICAL 2: self.runner는 session.open()(브라우저 기동 · 로그인 ·
+        # 캡차 대기까지 포함)이 끝난 뒤에야 생긴다. 그 창에서 정지를 눌러도
+        # on_stop이 할 일이 없어 보이면 안 된다 — 이 플래그가 요청 자체를
+        # 기억해 두고, _run_engine이 session.open()에서 돌아오는 즉시 확인한다.
+        self._stop_requested = False
 
         self.account_input = QLineEdit()
         self.password_input = QLineEdit()
@@ -234,6 +239,7 @@ class MainWindow(QMainWindow):
             return
 
         self._save_config(config)
+        self._stop_requested = False
         for panel in self.panels:
             panel.set_alert("")
             panel.set_running(True)
@@ -252,6 +258,16 @@ class MainWindow(QMainWindow):
             history.close()
             await session.close()
             raise
+
+        # CRITICAL 2: session.open()이 캡차 · 로그인 대기로 오래 걸리는
+        # 동안 정지가 눌렸을 수 있다. self.runner는 아직 없으므로 그 요청은
+        # 이 플래그에만 남아 있다 — Runner를 만들기 전에 여기서 확인한다.
+        # 그러지 않으면 이미 정지를 요청한 운영자 앞에서 실행이 그대로
+        # 시작되고, 창은 (버그 수정 전처럼) 실행이 끝날 때까지 닫히지 않는다.
+        if self._stop_requested:
+            await session.close()
+            history.close()
+            return None
 
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
             async def like_fn(blog_id: str, log_no: str):
@@ -277,9 +293,15 @@ class MainWindow(QMainWindow):
                 history.close()
 
     def on_stop(self) -> None:
+        # CRITICAL 2: self.runner가 아직 없어도(브라우저 기동 · 로그인 대기
+        # 중) 요청은 항상 기억해 두고 화면에 반영한다. 예전에는 여기서 아무
+        # 일도 하지 않아 ■ 버튼이 죽은 것처럼 보였다.
+        self._stop_requested = True
         if self.runner is not None:
             self.bridge.request_stop(self.runner.request_stop)
             self.summary_label.setText("정지 요청됨 — 진행 중인 블로그를 마칩니다…")
+        else:
+            self.summary_label.setText("정지 요청됨 — 로그인/준비 중입니다…")
 
     # ---------------- 종료 ----------------
 
@@ -289,7 +311,11 @@ class MainWindow(QMainWindow):
             return
 
         if self._close_pending:
-            # 이미 정지를 요청하고 기다리는 중이다 — 다시 묻지 않는다.
+            # 이미 정지를 요청하고 기다리는 중이다 — 다시 묻지는 않지만,
+            # 정지 요청 자체는 다시 보낸다. 그러지 않으면 첫 요청이 유실된
+            # 경우(예: 브리지 루프가 아직 뜨기 전) 창을 다시 닫으려는 모든
+            # 시도가 이 분기에서 그냥 무시되어 창이 영원히 닫히지 않는다.
+            self.on_stop()
             event.ignore()
             return
 
