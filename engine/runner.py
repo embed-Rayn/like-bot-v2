@@ -157,8 +157,7 @@ class Runner:
 
         ok = tried = 0
         for log_no in log_nos[: self._config.likes_per_blog]:
-            await self._limiter.acquire()
-            outcome = await self._like(target.blog_id, log_no)
+            outcome = await self._attempt_like(target, log_no)
             tried += 1
             self._likes_tried += 1
             self._emit(LikeResultEvent(target.blog_id, log_no, outcome.value))
@@ -187,6 +186,22 @@ class Runner:
 
         self._record(target, ok, tried)
         return False
+
+    async def _attempt_like(self, target: Target, log_no: str) -> LikeOutcome:
+        """공감 글 하나를 시도한다.
+
+        I6/스펙 §7.1: TIMEOUT은 딱 한 번 재시도하고, 그래도 실패하면 이
+        글만 건너뛴다. 재시도는 새 요청이므로 속도 제한 토큰을 다시
+        받는다. 첫 시도가 TIMEOUT이었다가 재시도로 회복된 경우, 호출자
+        (그리고 차단 감지기 · 이벤트 로그)는 최종 결과만 보게 된다 — 잠깐
+        느렸던 글 하나가 연속 실패 카운터를 불필요하게 갉아먹지 않는다.
+        """
+        await self._limiter.acquire()
+        outcome = await self._like(target.blog_id, log_no)
+        if outcome is LikeOutcome.TIMEOUT:
+            await self._limiter.acquire()
+            outcome = await self._like(target.blog_id, log_no)
+        return outcome
 
     def _record(self, target: Target, ok: int, tried: int) -> None:
         outcome = "liked" if ok else "no_like"

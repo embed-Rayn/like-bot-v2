@@ -243,6 +243,67 @@ async def test_not_logged_in_aborts_immediately(tmp_path):
     assert calls["n"] == 1                # 한 번만 시도하고 즉시 중단
 
 
+# ---- I6: TIMEOUT is retried exactly once, per spec 7.1 ----
+
+async def test_timeout_is_retried_once_and_recovers(tmp_path):
+    calls = {"n": 0}
+
+    async def like_fn(blog_id, log_no):
+        calls["n"] += 1
+        return LikeOutcome.TIMEOUT if calls["n"] == 1 else LikeOutcome.SUCCESS
+
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, likes_per_blog=1), search, like_fn)
+    summary = await runner.run()
+    history.close()
+
+    assert calls["n"] == 2            # 원 시도 1회 + 재시도 1회
+    assert summary.likes_ok == 1      # 회복된 결과가 집계된다
+    assert summary.likes_tried == 1   # 논리적으로는 여전히 이 글 1건 시도
+
+
+async def test_timeout_recovery_emits_and_records_only_the_final_outcome(tmp_path):
+    """재시도로 회복된 글은 차단 감지기 · UI 로그 모두에서 실패로 잡히면
+    안 된다 — 잠깐 느렸던 글 하나가 연속 실패 카운터를 갉아먹지 않는다."""
+    from engine.events import LikeResultEvent
+
+    calls = {"n": 0}
+
+    async def like_fn(blog_id, log_no):
+        calls["n"] += 1
+        return LikeOutcome.TIMEOUT if calls["n"] == 1 else LikeOutcome.SUCCESS
+
+    events = []
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, likes_per_blog=1), search,
+                              like_fn, events)
+    await runner.run()
+    history.close()
+
+    like_events = [e for e in events if isinstance(e, LikeResultEvent)]
+    assert len(like_events) == 1
+    assert like_events[0].outcome == "success"
+
+
+async def test_timeout_retried_and_still_failing_skips_just_that_post(tmp_path):
+    calls = {"n": 0}
+
+    async def like_fn(blog_id, log_no):
+        calls["n"] += 1
+        return LikeOutcome.TIMEOUT
+
+    search = FakeSearch({"kw1": [["b1", "b2"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, likes_per_blog=1), search, like_fn)
+    summary = await runner.run()
+    history.close()
+
+    assert calls["n"] == 4            # 블로그 2개 * (원 시도 + 재시도)
+    assert summary.likes_ok == 0
+    assert summary.likes_tried == 2   # 블로그당 1건 시도로 집계 — 재시도는 안 겹친다
+    assert summary.blogs_done == 2    # 계속 다음 블로그로 넘어간다
+    assert summary.stop_reason == "exhausted"
+
+
 # ---- I3: RunSummary.dry_run must reflect the config, for the runs table + UI ----
 
 async def test_run_summary_carries_the_dry_run_flag(tmp_path):
