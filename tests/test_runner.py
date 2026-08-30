@@ -340,6 +340,38 @@ async def test_run_cancelled_externally_still_reports_tally(tmp_path):
 
 # ---- Fix 3: total search failure must not be reported as normal completion ----
 
+# ---- I2: RSS 폴백은 사건으로 취급되어야 한다 ----
+
+async def test_empty_rss_result_emits_fallback_used_naming_the_blog(tmp_path):
+    from engine.events import FallbackUsed
+
+    class EmptyPosts:
+        async def recent_log_nos(self, blog_id, limit):
+            return []
+
+    events = []
+    search = FakeSearch({"kw1": [["blog_a"]]})
+    history = History(tmp_path / "h.db")
+    runner = Runner(
+        config=_config(tmp_path),
+        history=history,
+        search=search,
+        posts=EmptyPosts(),
+        like_fn=await _always(LikeOutcome.SUCCESS),
+        limiter=_no_wait_limiter(),
+        detector=BlockDetector(),
+        emit=events.append,
+        run_id="run1",
+    )
+    await runner.run()
+    history.close()
+
+    fallbacks = [e for e in events if isinstance(e, FallbackUsed)]
+    assert len(fallbacks) == 1
+    assert fallbacks[0].where == "posts"
+    assert "blog_a" in fallbacks[0].reason
+
+
 async def test_search_failure_for_every_keyword_is_reported_as_error(tmp_path):
     class FailingSearch:
         async def iter_pages(self, query, start_date, end_date, first_page=1):

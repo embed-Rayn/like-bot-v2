@@ -19,6 +19,7 @@ from engine.events import (
     Aborted,
     BlogVisited,
     Event,
+    FallbackUsed,
     LikeResultEvent,
     LogLine,
     PageCollected,
@@ -141,6 +142,17 @@ class Runner:
             target.blog_id, self._config.likes_per_blog
         )
         if not log_nos:
+            # I2: PostsClient는 모든 httpx.HTTPError를 빈 리스트로 삼킨다.
+            # 이 폴백을 조용히 쓰면, 네이버가 RSS를 막거나 UA를 거부하기
+            # 시작하는 순간 모든 블로그가 3개에서 1개로 조용히 줄어들고
+            # 아무 데도 표시되지 않는다 — 레거시가 죽은 것과 같은 침묵
+            # 저하 모양이다 (스펙 §7.4). 폴백이 쓰였다는 사실 자체를
+            # 이벤트로 방출한다.
+            self._emit(FallbackUsed(
+                "posts",
+                f"{target.blog_id}: RSS에서 최신 글을 가져오지 못해 검색 결과의 "
+                "글 1건으로만 진행합니다.",
+            ))
             log_nos = [target.seed_log_no]
 
         ok = tried = 0
