@@ -113,7 +113,10 @@ Settled with the user:
    first. The cap is a global per-account budget, not per worker. Blogs, not likes, is the
    right unit: one blog owner is one chance at a reply visit regardless of how many of their
    posts got liked.
-6. **Visit history is persisted**, so a cap of N means N *new* blogs every run.
+6. **Visit history is persisted, scoped to the logged-in account** — `visits` is keyed on
+   `(account, blog_id)`, so a cap of N means N *new* blogs every run, and switching accounts
+   never makes account B skip blogs only account A has visited. Sessions are stored per
+   account for the same reason.
 7. **Build order: engine → PyQt6 desktop → (later) web/Linux.** Scope of the current work is
    engine + desktop. Web is deferred for verification order, not effort: selector strategy
    and safe pacing must be confirmed headful before anything runs headless and unattended.

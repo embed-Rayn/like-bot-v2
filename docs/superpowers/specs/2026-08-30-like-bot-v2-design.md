@@ -75,6 +75,9 @@ Playwright를 쓰는 이유는 `frame_locator("#mainFrame")`로 iframe 전환 �
 방문한 블로그 ID를 파일에 남겨 다음 실행에서 건너뛴다. 상한 N명이 "매번 새로운 N명"이
 되고, 나중에 분석의 기초 데이터가 된다.
 
+**기록의 범위는 공감을 누른 로그인 계정이다.** 계정이 다르면 방문 이력도 별개다 —
+계정 B는 계정 A가 다녀온 블로그에 아직 간 적이 없기 때문이다(§6.4).
+
 ### 결정 7 — 구현 순서: 엔진 → PyQt6 데스크톱 → (나중에) 웹·리눅스
 
 **이번 작업의 범위는 엔진 + PyQt6 데스크톱까지다.**
@@ -211,7 +214,8 @@ like-bot-v2/
 
 **`ratelimit.py`** — 워커 전원이 하나의 예산을 나눠 쓴다. 단일 이벤트 루프라 락이 없다.
 
-**`history.py`** — 중복 방지와 실행 이력. SQLite.
+**`history.py`** — 중복 방지와 실행 이력. SQLite. 조회·기록 모두 **로그인 계정 범위**로
+한정된다(§6.4).
 
 **`runner.py`** — 생산자/소비자 오케스트레이션과 종료 처리.
 
@@ -243,7 +247,7 @@ for page in 1, 2, 3, ...:
     if not items: break                            # 결정 2 · 결과 소진
     for it in items:
         if it.blog_id in seen_this_run: continue      # 실행 내 · 워커 간 중복
-        if history.was_visited(it.blog_id): continue  # 결정 6 · 실행 간 중복
+        if history.was_visited(account, it.blog_id): continue  # 결정 6 · 실행 간 중복
         seen_this_run.add(it.blog_id)
         await queue.put(Target(it.blog_id, keyword, seed_log_no=it.log_no))
 ```
@@ -306,9 +310,10 @@ RSS 조회를 생산자가 아니라 소비자에서 하는 이유는, 상한에
 
 ```
 %LOCALAPPDATA%\like-bot-v2\        (개발 중에는 ./data/)
-├── config.json          실행 설정 — 비밀번호 없음
-├── session.dat          Playwright 세션 (암호화)
-└── history.db           SQLite
+├── config.json              실행 설정 — 비밀번호 없음
+├── sessions\
+│   └── {account}.dat        Playwright 세션 (계정별, 암호화)
+└── history.db               SQLite — visits는 (account, blog_id) 기준
 ```
 
 레거시는 `open("accounts.csv")`처럼 작업 디렉터리 상대 경로를 써서 exe를 다른 위치에서
@@ -329,7 +334,9 @@ RSS 조회를 생산자가 아니라 소비자에서 하는 이유는, 상한에
 
 ### 6.3 세션
 
-`storage_state`(쿠키 + localStorage)를 저장해 재사용한다.
+`storage_state`(쿠키 + localStorage)를 **계정별 파일로** 저장해 재사용한다. 단일 파일이면
+계정을 바꿀 때마다 세션이 덮어써져 매번 로그인 폼을 다시 지나가게 되는데, 그곳이 가장
+방어가 강하고 위험한 구간이므로 그 왕복 자체를 없애는 것이 요점이다.
 
 **이 파일은 네이버 세션 쿠키이며, 훔치면 비밀번호 없이 로그인된다.** 자격증명을 키링에
 넣고 세션을 평문 JSON으로 두면 보호가 반감되므로, Windows DPAPI로 암호화해 저장한다.
@@ -339,13 +346,15 @@ RSS 조회를 생산자가 아니라 소비자에서 하는 이유는, 상한에
 
 ```sql
 CREATE TABLE visits (
-    blog_id     TEXT PRIMARY KEY,   -- 결정 6 · 중복 방지의 핵심
+    account     TEXT NOT NULL,      -- 공감을 누른 로그인 계정
+    blog_id     TEXT NOT NULL,
     run_id      TEXT NOT NULL,
     keyword     TEXT NOT NULL,
     visited_at  TEXT NOT NULL,
     likes_ok    INTEGER NOT NULL,
     likes_tried INTEGER NOT NULL,
-    outcome     TEXT NOT NULL       -- liked | already | no_button | error
+    outcome     TEXT NOT NULL,      -- liked | already | no_button | error
+    PRIMARY KEY (account, blog_id)  -- 결정 6 · 중복 방지의 핵심
 );
 
 CREATE TABLE runs (
@@ -360,7 +369,19 @@ CREATE TABLE runs (
 );
 ```
 
-`blog_id`가 기본키라 생산자의 중복 조회가 O(1)이다.
+**방문 기록은 로그인 계정 기준이다.** `(account, blog_id)` 복합 기본키이며, 중복 판정은
+언제나 실행 중인 계정 범위 안에서만 이루어진다.
+
+계정을 무시하고 `blog_id` 단독으로 판정하면, 계정 B로 처음 돌릴 때 계정 A가 이미 다녀온
+블로그를 건너뛴다. 계정 B는 그 블로그에 한 번도 간 적이 없으므로 명백히 틀린 동작이고,
+운영자가 블로그를 둘 이상 운영하거나 계정을 교체하는 순간 조용히 대상을 잃는다. 반대로
+계정별로 분리해 두면 같은 DB 파일 하나로 여러 계정을 안전하게 운용할 수 있다.
+
+복합 기본키는 SQLite에서 그대로 인덱스가 되므로 `WHERE account=? AND blog_id=?` 조회는
+여전히 로그 시간이다. 생산자가 페이지마다 7건씩 하는 조회(§5.1)에 부담이 없다.
+
+같은 이유로 `history` 인터페이스는 계정을 명시적으로 받는다 —
+`was_visited(account, blog_id)`. 기본값으로 숨기지 않는다.
 
 공감 1건마다 남기는 상세 이벤트 테이블은 **의도적으로 만들지 않는다.** 답방률을 실제로
 측정하려면 내 블로그 유입 로그가 필요한데 그것은 네이버 통계에만 있고 가져올 수 없다.
