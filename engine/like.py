@@ -9,6 +9,9 @@
 """
 from __future__ import annotations
 
+import asyncio
+import time
+
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
@@ -19,6 +22,14 @@ LIKE_BUTTON = "a.u_likeit_list_btn"
 FRAME = "#mainFrame"
 GOTO_TIMEOUT_MS = 15_000
 BUTTON_TIMEOUT_MS = 6_000
+
+# click()은 액션 가능성(보임 · 가려지지 않음)만 기다릴 뿐, 그 클릭이
+# 일으킨 AJAX 응답은 기다리지 않는다. 공감은 AJAX 호출이고 class가
+# off→on으로 바뀌는 시점은 응답이 돌아온 뒤이므로, click() 직후 한 번만
+# 읽으면 거의 항상 아직 off를 읽는다 — 실제로는 성공한 공감이 ERROR로
+# 오판된다. 그래서 클릭 후에는 상태가 바뀔 때까지 짧게 폴링한다.
+LIKE_VERIFY_TIMEOUT_MS = 4_000
+LIKE_VERIFY_POLL_INTERVAL_S = 0.2
 
 
 def post_url(blog_id: str, log_no: str) -> str:
@@ -38,6 +49,17 @@ def classify_button_state(class_attr: str | None) -> LikeOutcome | None:
     if "off" in tokens:
         return None
     return LikeOutcome.ERROR
+
+
+def is_confirmed_liked(class_attr: str | None) -> bool:
+    """클릭 후 버튼 class가 실제로 '눌림'(on) 상태로 바뀌었는지 판정한다.
+
+    순수 술어 — Playwright 없이 테스트된다. classify_button_state가
+    ALREADY_LIKED를 반환하는 경우만 '확인됨'으로 본다. off는 아직
+    반영되지 않은 것이고, ERROR(알 수 없는 클래스 · 속성 없음)는 확인된
+    상태가 아니므로 계속 대기하다 타임아웃으로 처리한다.
+    """
+    return classify_button_state(class_attr) is LikeOutcome.ALREADY_LIKED
 
 
 async def press_like(
@@ -83,12 +105,33 @@ async def press_like(
 
         await button.click(timeout=BUTTON_TIMEOUT_MS)
 
-        # 클릭이 실제로 반영됐는지 확인한다.
-        after = classify_button_state(await button.get_attribute("class"))
-        if after is LikeOutcome.ALREADY_LIKED:
+        # 클릭이 실제로 반영됐는지 확인한다 — AJAX 응답을 기다리는
+        # 유일한 지점이다. 확인 없는 클릭은 거짓 성공을 만들고, 그러면
+        # 차단 감지가 무력해진다.
+        if await _wait_for_like_confirmation(button):
             return LikeOutcome.SUCCESS
-        return LikeOutcome.ERROR
+        return LikeOutcome.TIMEOUT
     except PlaywrightTimeout:
         return LikeOutcome.TIMEOUT
     except PlaywrightError:
         return LikeOutcome.ERROR
+
+
+async def _wait_for_like_confirmation(
+    button, timeout_ms: int = LIKE_VERIFY_TIMEOUT_MS
+) -> bool:
+    """클릭 후 버튼 class가 on으로 바뀔 때까지 짧게 폴링한다.
+
+    Playwright의 `expect().to_have_class()` 대신 수동 폴링을 쓰는 이유는
+    타임아웃 시 명확히 False를 반환해 호출자가 LikeOutcome.TIMEOUT으로
+    사상하기 쉽게 하기 위함이다 (예외를 잡아 유형을 다시 판별할 필요가
+    없다).
+    """
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    while True:
+        class_attr = await button.get_attribute("class")
+        if is_confirmed_liked(class_attr):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(LIKE_VERIFY_POLL_INTERVAL_S)
