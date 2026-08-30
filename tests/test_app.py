@@ -218,6 +218,22 @@ def test_close_event_retries_the_stop_when_already_pending(window, monkeypatch):
     assert routed, "재시도된 정지 요청이 브리지를 거치지 않았다"
 
 
+# ---------------- MINOR: LikeResultEvent는 자기 키워드 패널로만 간다 ----------------
+
+
+def test_like_result_event_routes_to_its_own_panel_not_always_the_first(window):
+    from engine.events import LikeResultEvent
+
+    window.panels[0].keyword_input.setText("kw1")
+    window.panels[1].keyword_input.setText("kw2")
+
+    window.on_event(LikeResultEvent(keyword="kw2", blog_id="b2", log_no="1",
+                                    outcome="error"))
+
+    assert "b2/1" in window.panels[1].log_view.toPlainText()
+    assert "b2/1" not in window.panels[0].log_view.toPlainText()
+
+
 # ---------------- I5: 기간 · 상한 · 속도 제한도 config.json에 저장된다 ----------------
 
 

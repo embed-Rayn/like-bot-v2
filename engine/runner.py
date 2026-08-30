@@ -160,7 +160,7 @@ class Runner:
             outcome = await self._attempt_like(target, log_no)
             tried += 1
             self._likes_tried += 1
-            self._emit(LikeResultEvent(target.blog_id, log_no, outcome.value))
+            self._emit(LikeResultEvent(target.keyword, target.blog_id, log_no, outcome.value))
 
             if outcome is LikeOutcome.SUCCESS:
                 ok += 1

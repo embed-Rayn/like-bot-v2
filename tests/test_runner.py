@@ -209,6 +209,23 @@ async def test_visits_are_recorded_under_the_running_account(tmp_path):
     history.close()
 
 
+# ---- MINOR: LikeResultEvent carries the keyword ----
+
+async def test_like_result_event_carries_the_target_keyword(tmp_path):
+    from engine.events import LikeResultEvent
+
+    events = []
+    search = FakeSearch({"kw1": [["b1"]], "kw2": [["b2"]]})
+    config = _config(tmp_path, keywords=["kw1", "kw2"])
+    runner, history = _runner(tmp_path, config, search,
+                              await _always(LikeOutcome.SUCCESS), events)
+    await runner.run()
+    history.close()
+
+    by_blog = {e.blog_id: e.keyword for e in events if isinstance(e, LikeResultEvent)}
+    assert by_blog == {"b1": "kw1", "b2": "kw2"}
+
+
 async def test_emits_events(tmp_path):
     from engine.events import BlogVisited, PageCollected, RunFinished
 

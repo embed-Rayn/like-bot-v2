@@ -32,6 +32,7 @@ class BlogVisited:
 
 @dataclass(frozen=True)
 class LikeResultEvent:
+    keyword: str         # MINOR: 어느 패널로 보낼지 판단하는 데 필요하다
     blog_id: str
     log_no: str
     outcome: str        # LikeOutcome.value

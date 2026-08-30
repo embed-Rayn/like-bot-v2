@@ -389,10 +389,13 @@ class MainWindow(QMainWindow):
                 )
 
         elif isinstance(event, LikeResultEvent):
+            # MINOR: LikeResultEvent가 이제 키워드를 들고 있으므로 실제
+            # 해당 패널로 보낸다. 예전에는 항상 panels[0]에서 멈춰
+            # (for/break) 모든 키워드의 실패가 1번 패널에만 쌓였다.
             if event.outcome not in ("success", "already_liked"):
-                for panel in self.panels:
+                panel = self._panel_for(event.keyword)
+                if panel:
                     panel.append_log(f"{event.blog_id}/{event.log_no} → {event.outcome}")
-                    break
 
         elif isinstance(event, FallbackUsed):
             # 조용히 잘리는 대신 시끄럽게 알린다 (결함 1 재발 방지).
