@@ -14,7 +14,8 @@ FIXTURE_UNUSABLE = (
     ")]}',\n"
     '{"result":{"totalCount":5,"pagePerCount":7,"searchList":['
     '{"title":"no ids here","blogName":"b","addDate":1},'
-    '{"title":"still no ids","blogName":"b","addDate":2}]}}'
+    '{"title":"still no ids","blogName":"b","addDate":2},'
+    '{"title":"nope","blogName":"b","addDate":3}]}}'
 )
 
 
@@ -68,6 +69,8 @@ async def test_http_error_raises():
 
 
 async def test_iter_pages_raises_when_rows_present_but_all_unusable():
+    # Page number (2) and raw row count (3) are deliberately different values
+    # so the assertion below can't pass by matching the wrong one.
     def handler(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params["currentPage"])
         return httpx.Response(200, text=FIXTURE_PAGE if page == 1 else FIXTURE_UNUSABLE)
@@ -77,7 +80,9 @@ async def test_iter_pages_raises_when_rows_present_but_all_unusable():
         with pytest.raises(SearchParseError) as exc_info:
             [n async for n, _ in SearchClient(http).iter_pages("k", "a", "b")]
 
-    assert "2" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "2페이지" in message
+    assert "3건" in message
 
 
 async def test_iter_pages_ends_cleanly_on_genuinely_empty_first_page():
