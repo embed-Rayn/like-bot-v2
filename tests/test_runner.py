@@ -7,7 +7,7 @@ from engine.config import RunConfig
 from engine.history import History
 from engine.models import LikeOutcome, SearchItem, SearchPage
 from engine.ratelimit import RateLimiter
-from engine.runner import Runner
+from engine.runner import Runner, classify_visit_outcome
 from engine.safety import BlockDetector
 
 
@@ -258,6 +258,55 @@ async def test_not_logged_in_aborts_immediately(tmp_path):
 
     assert summary.stop_reason == "not_logged_in"
     assert calls["n"] == 1                # 한 번만 시도하고 즉시 중단
+
+
+# ---- MINOR: visits.outcome must distinguish liked/already/no_button/error ----
+
+def test_classify_visit_outcome_liked_when_any_success():
+    assert classify_visit_outcome(1, [LikeOutcome.SUCCESS, LikeOutcome.ERROR]) == "liked"
+
+
+def test_classify_visit_outcome_already_when_no_success_but_already_liked():
+    assert classify_visit_outcome(
+        0, [LikeOutcome.ALREADY_LIKED, LikeOutcome.NO_BUTTON]
+    ) == "already"
+
+
+def test_classify_visit_outcome_no_button_when_all_attempts_had_no_button():
+    assert classify_visit_outcome(
+        0, [LikeOutcome.NO_BUTTON, LikeOutcome.NO_BUTTON]
+    ) == "no_button"
+
+
+def test_classify_visit_outcome_error_for_anything_else():
+    assert classify_visit_outcome(0, [LikeOutcome.ERROR, LikeOutcome.TIMEOUT]) == "error"
+    assert classify_visit_outcome(0, [LikeOutcome.NO_BUTTON, LikeOutcome.ERROR]) == "error"
+
+
+async def test_visit_records_already_outcome_in_history(tmp_path):
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path), search,
+                              await _always(LikeOutcome.ALREADY_LIKED))
+    await runner.run()
+
+    row = history.connection.execute(
+        "SELECT outcome FROM visits WHERE blog_id=?", ("b1",)
+    ).fetchone()
+    history.close()
+    assert row[0] == "already"
+
+
+async def test_visit_records_no_button_outcome_in_history(tmp_path):
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path), search,
+                              await _always(LikeOutcome.NO_BUTTON))
+    await runner.run()
+
+    row = history.connection.execute(
+        "SELECT outcome FROM visits WHERE blog_id=?", ("b1",)
+    ).fetchone()
+    history.close()
+    assert row[0] == "no_button"
 
 
 # ---- MINOR: SearchPage.dropped must actually be surfaced ----

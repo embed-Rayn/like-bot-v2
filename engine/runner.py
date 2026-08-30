@@ -38,6 +38,24 @@ QUEUE_MAXSIZE = 50
 _SENTINEL = object()
 
 
+def classify_visit_outcome(ok: int, outcomes: list[LikeOutcome]) -> str:
+    """블로그 하나를 방문한 결과를 visits.outcome 값(스펙 §6.4:
+    liked | already | no_button | error) 중 하나로 요약한다.
+
+    파일 로그가 의도적으로 범위 밖이라(§6.4) 이 값이 방문마다 남는 유일한
+    포렌식 흔적이다. 예전에는 ok가 있으면 "liked", 아니면 무조건
+    "no_like"였다 — 이미 전부 공감돼 있던 것과, 버튼이 아예 없던 것과,
+    진짜 오류를 구분할 수 없었다.
+    """
+    if ok > 0:
+        return "liked"
+    if LikeOutcome.ALREADY_LIKED in outcomes:
+        return "already"
+    if outcomes and all(o is LikeOutcome.NO_BUTTON for o in outcomes):
+        return "no_button"
+    return "error"
+
+
 class Runner:
     def __init__(
         self,
@@ -167,10 +185,12 @@ class Runner:
             log_nos = [target.seed_log_no]
 
         ok = tried = 0
+        outcomes: list[LikeOutcome] = []
         for log_no in log_nos[: self._config.likes_per_blog]:
             outcome = await self._attempt_like(target, log_no)
             tried += 1
             self._likes_tried += 1
+            outcomes.append(outcome)
             self._emit(LikeResultEvent(target.keyword, target.blog_id, log_no, outcome.value))
 
             if outcome is LikeOutcome.SUCCESS:
@@ -181,21 +201,21 @@ class Runner:
             # 실패를 쌓을 때까지 기다리면 그동안 확실히 실패할 5번을 더
             # 시도하며 속도 제한 토큰을 낭비한다. 탐지기보다 먼저 끊는다.
             if outcome is LikeOutcome.NOT_LOGGED_IN:
-                self._record(target, ok, tried)
+                self._record(target, ok, tried, outcomes)
                 self._stop_reason = "not_logged_in"
                 self._emit(Aborted("세션이 더 이상 로그인 상태가 아닙니다."))
                 return True
 
             reason = self._detector.record(outcome)
             if reason is not None:
-                self._record(target, ok, tried)
+                self._record(target, ok, tried, outcomes)
                 self._stop_reason = (
                     "blocked" if outcome is LikeOutcome.BLOCKED else "error"
                 )
                 self._emit(Aborted(reason))
                 return True
 
-        self._record(target, ok, tried)
+        self._record(target, ok, tried, outcomes)
         return False
 
     async def _attempt_like(self, target: Target, log_no: str) -> LikeOutcome:
@@ -214,8 +234,10 @@ class Runner:
             outcome = await self._like(target.blog_id, log_no)
         return outcome
 
-    def _record(self, target: Target, ok: int, tried: int) -> None:
-        outcome = "liked" if ok else "no_like"
+    def _record(
+        self, target: Target, ok: int, tried: int, outcomes: list[LikeOutcome]
+    ) -> None:
+        outcome = classify_visit_outcome(ok, outcomes)
         # R10: dry run은 실제로 아무것도 누르지 않았으므로 영구 방문 이력에
         # 남기지 않는다. 남기면 다음 실제 실행이 같은 블로그를 전부
         # "이미 방문함"으로 건너뛰어 아무것도 하지 않게 된다.
