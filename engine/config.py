@@ -78,7 +78,11 @@ class RunConfig:
     def validate(cls, raw: dict) -> tuple["RunConfig | None", list[FieldError]]:
         errors: list[FieldError] = []
 
-        account = str(raw.get("account", "")).strip()
+        # MINOR: 정규화하지 않으면 "MyID"와 "myid"가 서로 다른 세션 파일 ·
+        # 방문 이력을 갖게 된다 — 이미 다녀온 블로그를 다시 방문하는 것은
+        # 계정 안전에 직접 반한다(§6.4). 대소문자를 구분하지 않는 네이버
+        # 아이디의 실제 성질에 맞춰 여기 한 곳에서만 정규화한다.
+        account = str(raw.get("account", "")).strip().lower()
         if not account:
             errors.append(FieldError("account", "네이버 아이디를 입력하세요."))
 

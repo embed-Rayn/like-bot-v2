@@ -49,7 +49,7 @@ from engine.ratelimit import RateLimiter
 from engine.runner import Runner
 from engine.safety import BlockDetector
 from engine.search import SearchClient
-from engine.session import BrowserSession, LoginError
+from engine.session import BrowserSession
 
 KEYRING_SERVICE = "like-bot-v2"
 PANEL_COUNT = 4
@@ -273,14 +273,14 @@ class MainWindow(QMainWindow):
         self.bridge.start(lambda emit: self._run_engine(config, stored, emit))
 
     async def _run_engine(self, config: RunConfig, password: str, emit) -> object:
-        history = History(self.paths.history_db)
         session = BrowserSession(self.paths)
-        try:
-            await session.open(config.account, lambda: password)
-        except LoginError:
-            history.close()
-            await session.close()
-            raise
+        # MINOR: session.open()은 실패하는 모든 경로(LoginError든, 브라우저
+        # 바이너리 누락 같은 다른 예외든— engine/session.py 참고)에서
+        # 스스로 브라우저/드라이버를 정리하고 원래 예외를 그대로 다시
+        # 던진다. History 커넥션을 이보다 먼저 만들어 두면, LoginError가
+        # 아닌 예외가 여기서 나는 경우 그 커넥션을 닫을 코드가 전혀 실행되지
+        # 않고 새어 나간다. 성공한 뒤에만 만들면 이 문제 자체가 없다.
+        await session.open(config.account, lambda: password)
 
         # CRITICAL 2: session.open()이 캡차 · 로그인 대기로 오래 걸리는
         # 동안 정지가 눌렸을 수 있다. self.runner는 아직 없으므로 그 요청은
@@ -289,9 +289,9 @@ class MainWindow(QMainWindow):
         # 시작되고, 창은 (버그 수정 전처럼) 실행이 끝날 때까지 닫히지 않는다.
         if self._stop_requested:
             await session.close()
-            history.close()
             return None
 
+        history = History(self.paths.history_db)
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
             async def like_fn(blog_id: str, log_no: str):
                 return await press_like(

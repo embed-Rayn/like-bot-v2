@@ -315,10 +315,13 @@ async def test_run_engine_closes_session_and_skips_runner_when_stop_requested_fi
     window, monkeypatch
 ):
     """session.open()이 끝난 시점에 이미 정지가 요청돼 있었다면, Runner를
-    만들지 않고 세션/히스토리를 정리한 뒤 그대로 반환해야 한다."""
+    만들지 않고 세션을 정리한 뒤 그대로 반환해야 한다. History는 open()
+    이후에만 만들어지므로(MINOR: 커넥션 누수 방지) 이 경로에서는 아예
+    생성되지 않는다 — 만들어졌다가 닫히지 않고 새는 것보다 안전하다."""
     from engine.config import RunConfig
 
-    closed = {"session": False, "history": False}
+    closed = {"session": False}
+    history_created = {"called": False}
 
     class FakeSession:
         page = None
@@ -331,10 +334,14 @@ async def test_run_engine_closes_session_and_skips_runner_when_stop_requested_fi
 
     class FakeHistory:
         def close(self):
-            closed["history"] = True
+            pass
+
+    def fake_history_ctor(path):
+        history_created["called"] = True
+        return FakeHistory()
 
     monkeypatch.setattr("desktop.app.BrowserSession", lambda paths: FakeSession())
-    monkeypatch.setattr("desktop.app.History", lambda path: FakeHistory())
+    monkeypatch.setattr("desktop.app.History", fake_history_ctor)
 
     config, errors = RunConfig.validate({
         "account": "acct",
@@ -353,5 +360,46 @@ async def test_run_engine_closes_session_and_skips_runner_when_stop_requested_fi
     result = await window._run_engine(config, "pw", lambda e: None)
 
     assert result is None
-    assert closed == {"session": True, "history": True}
+    assert closed == {"session": True}
+    assert history_created["called"] is False
+
+
+async def test_run_engine_does_not_leak_a_history_connection_on_non_login_failure(
+    window, monkeypatch
+):
+    """MINOR: session.open()이 LoginError가 아닌 예외(브라우저 바이너리
+    누락 등)로 실패해도, History는 open() 성공 이후에만 만들어지므로 닫을
+    커넥션 자체가 없다 — 새는 커넥션이 생기지 않는다."""
+    class FakeSession:
+        async def open(self, account, password_supplier):
+            raise RuntimeError("chromium binary missing")
+
+    history_created = {"called": False}
+
+    def fake_history_ctor(path):
+        history_created["called"] = True
+        return object()
+
+    monkeypatch.setattr("desktop.app.BrowserSession", lambda paths: FakeSession())
+    monkeypatch.setattr("desktop.app.History", fake_history_ctor)
+
+    from engine.config import RunConfig
+
+    config, errors = RunConfig.validate({
+        "account": "acct",
+        "keywords": ["kw"],
+        "excludes": [],
+        "start_date": "2026-08-29",
+        "end_date": "2026-08-30",
+        "blog_limit": 10,
+        "likes_per_blog": 3,
+        "likes_per_minute": 6.0,
+        "dry_run": False,
+    })
+    assert errors == []
+
+    with pytest.raises(RuntimeError):
+        await window._run_engine(config, "pw", lambda e: None)
+
+    assert history_created["called"] is False
     assert window.runner is None
