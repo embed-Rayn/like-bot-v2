@@ -23,7 +23,8 @@ async def test_search_api_still_returns_expected_fields():
     assert page.per_page == 7, "pagePerCount가 7이 아닙니다 — 페이지 크기가 바뀌었습니다."
     assert page.items, "searchList가 비어 있습니다."
     first = page.items[0]
-    assert first.blog_id and first.log_no.isdigit()
+    assert first.blog_id, "domainIdOrBlogId가 비어 있습니다 — 응답 필드명이 바뀌었을 수 있습니다."
+    assert first.log_no.isdigit(), f"logNo가 숫자가 아닙니다: {first.log_no!r}"
 
 
 async def test_total_count_cap_is_still_1000():
