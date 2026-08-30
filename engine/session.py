@@ -121,19 +121,22 @@ class BrowserSession:
             except Exception:
                 storage_state = None    # 손상된 세션은 무시하고 새로 로그인한다
 
-        self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(headless=headless)
-        self._context = await self._browser.new_context(storage_state=storage_state)
-        self.page = await self._context.new_page()
-
         try:
+            self._pw = await async_playwright().start()
+            self._browser = await self._pw.chromium.launch(headless=headless)
+            self._context = await self._browser.new_context(storage_state=storage_state)
+            self.page = await self._context.new_page()
+
             if not await self._is_logged_in():
                 await self._login(account, password_supplier())
                 await self._save_state(state_file)
         except Exception:
             # 캡차·2차인증·자격증명 오류는 정상 운영 중에도 자주 일어난다
-            # (세션 재사용을 두는 이유 자체가 그것). 여기서 실패하면 브라우저를
-            # 열어둔 채로 예외를 올려서는 안 된다 — 매번 프로세스가 남는다.
+            # (세션 재사용을 두는 이유 자체가 그것). 브라우저 기동 자체가 실패할
+            # 수도 있다 (브라우저 바이너리 누락, 리소스 고갈 등). 어느 단계에서
+            # 실패하든 열어둔 핸들을 남긴 채로 예외를 올려서는 안 된다 — 매번
+            # 프로세스가 남는다. close()는 각 핸들을 None 여부로 방어하므로
+            # 생성 도중 어느 지점에서 멈췄어도 안전하다.
             await self.close()
             raise
         return self

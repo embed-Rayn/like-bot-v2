@@ -23,5 +23,8 @@ packages = ["engine", "desktop"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = ["contract: 네이버에 실제 요청을 보내는 계약 테스트 (비로그인)"]
-addopts = "-m 'not contract'"
+markers = [
+    "contract: 네이버에 실제 요청을 보내는 계약 테스트 (비로그인)",
+    "browser: 로컬 브라우저 바이너리가 필요한 테스트 (playwright install chromium)",
+]
+addopts = "-m 'not contract and not browser'"
