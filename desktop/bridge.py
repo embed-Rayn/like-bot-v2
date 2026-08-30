@@ -47,13 +47,22 @@ class EngineBridge(QObject):
             try:
                 try:
                     result = loop.run_until_complete(coro_factory(self.event_received.emit))
-                except Exception:
+                except BaseException:
+                    # BaseException, not Exception: Runner.run() deliberately
+                    # re-raises asyncio.CancelledError after recording its
+                    # summary (an earlier ruling), and CancelledError is a
+                    # BaseException subclass since Python 3.8. It must still
+                    # reach `failed` rather than vanish, or the UI is left
+                    # stuck "running" forever. We do not re-raise: this is a
+                    # worker thread, so re-raising only kills it silently.
                     error = traceback.format_exc(limit=5)
             finally:
-                loop.close()
-                if self._loop is loop:
-                    self._loop = None
-                self._running = False
+                try:
+                    loop.close()
+                finally:
+                    if self._loop is loop:
+                        self._loop = None
+                    self._running = False
 
             if error is None:
                 self.finished.emit(result)
@@ -64,7 +73,23 @@ class EngineBridge(QObject):
         self._thread.start()
 
     def request_stop(self, callback: Callable[[], None]) -> None:
-        """엔진 루프 스레드 안에서 callback을 실행한다 (예: Runner.request_stop)."""
+        """엔진 루프 스레드 안에서 callback을 실행한다 (예: Runner.request_stop).
+
+        주의: start() 직후 워커 스레드가 아직 self._loop를 설치하기 전에
+        request_stop이 호출되면 아무 일도 일어나지 않는다 (콜백이 조용히
+        버려짐). 그 창은 짧고, 제대로 닫으려면 이 설계가 원치 않는 동기화가
+        필요하므로 여기 문서화하는 것으로 충분하다고 본다.
+        """
         loop = self._loop
-        if loop is not None and loop.is_running():
+        if loop is None or not loop.is_running():
+            return
+        try:
             loop.call_soon_threadsafe(callback)
+        except RuntimeError:
+            # is_running() and call_soon_threadsafe are not atomic: the
+            # worker can finish run_until_complete and close the loop in
+            # the gap between them. Nothing is left to stop at that point,
+            # so this is a no-op rather than an exception surfacing on the
+            # Qt thread (which PyQt6 would otherwise let kill the app from
+            # inside a slot).
+            pass

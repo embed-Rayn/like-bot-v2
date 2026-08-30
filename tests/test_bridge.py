@@ -73,3 +73,58 @@ def test_is_running_is_false_after_completion(app):
     bridge.start(work)
     assert _pump(lambda: done)
     assert bridge.is_running() is False
+
+
+def test_cancelled_error_surfaces_as_failed_not_dropped(app):
+    """Runner.run() re-raises CancelledError after recording its summary (an
+    earlier ruling), so this BaseException subclass is the terminal exception
+    most likely to reach the bridge in practice. It must still produce a
+    terminal signal — not vanish, leaving the UI stuck "running" forever."""
+    errors = []
+    done = []
+    bridge = EngineBridge()
+    bridge.failed.connect(errors.append)
+    bridge.finished.connect(done.append)
+
+    async def cancelled(emit):
+        raise asyncio.CancelledError()
+
+    bridge.start(cancelled)
+    assert _pump(lambda: errors)
+    assert len(errors) == 1
+    assert done == []
+    assert bridge.is_running() is False
+
+
+def test_request_stop_does_not_raise_when_loop_closes_underneath_it(app):
+    """Simulates the race where the worker's run_until_complete returns (and
+    the loop stops/closes) in the gap between request_stop's is_running()
+    check and its call_soon_threadsafe call. Without the fix this raises
+    RuntimeError on the Qt (calling) thread, which PyQt6 would otherwise let
+    kill the app from inside a slot."""
+
+    class RaceyLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, callback):
+            raise RuntimeError("Event loop is closed")
+
+    bridge = EngineBridge()
+    bridge._loop = RaceyLoop()
+
+    bridge.request_stop(lambda: None)  # must not raise
+
+
+def test_request_stop_after_completion_does_not_raise(app):
+    bridge = EngineBridge()
+    done = []
+    bridge.finished.connect(done.append)
+
+    async def work(emit):
+        return None
+
+    bridge.start(work)
+    assert _pump(lambda: done)
+
+    bridge.request_stop(lambda: None)  # loop is gone; must not raise
