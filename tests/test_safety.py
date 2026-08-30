@@ -65,3 +65,48 @@ def test_reason_names_the_signal():
     d = BlockDetector(consecutive_failures=2)
     d.record(O.ERROR)
     assert "연속" in d.record(O.ERROR)
+
+
+# ---- I1: NO_BUTTON 연속 스트릭도 안전망이 있어야 한다 ----
+
+
+def test_short_no_button_streak_does_not_trip():
+    d = BlockDetector(no_button_streak=15)
+    for _ in range(14):
+        assert d.record(O.NO_BUTTON) is None
+
+
+def test_no_button_streak_trips_at_threshold():
+    d = BlockDetector(no_button_streak=5)
+    for _ in range(4):
+        assert d.record(O.NO_BUTTON) is None
+    reason = d.record(O.NO_BUTTON)
+    assert reason is not None
+    assert "버튼" in reason
+
+
+def test_already_liked_resets_the_no_button_streak():
+    d = BlockDetector(no_button_streak=3)
+    d.record(O.NO_BUTTON)
+    d.record(O.NO_BUTTON)
+    d.record(O.ALREADY_LIKED)          # 페이지 · 버튼이 여전히 닿는다는 신호
+    assert d.record(O.NO_BUTTON) is None
+    assert d.record(O.NO_BUTTON) is None    # 리셋 후 2건째 — 아직 3에 못 미침
+
+
+def test_success_resets_the_no_button_streak():
+    d = BlockDetector(no_button_streak=3)
+    d.record(O.NO_BUTTON)
+    d.record(O.NO_BUTTON)
+    d.record(O.SUCCESS)
+    assert d.record(O.NO_BUTTON) is None
+    assert d.record(O.NO_BUTTON) is None
+
+
+def test_no_button_streak_does_not_affect_consecutive_failure_counter():
+    """NO_BUTTON 자체는 여전히 실패로 카운트되지 않는다."""
+    d = BlockDetector(consecutive_failures=3, no_button_streak=99)
+    d.record(O.ERROR)
+    d.record(O.NO_BUTTON)
+    d.record(O.NO_BUTTON)
+    assert d.record(O.ERROR) is None       # 아직 연속 실패 2건일 뿐
