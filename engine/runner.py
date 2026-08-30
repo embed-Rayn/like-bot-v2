@@ -69,6 +69,7 @@ class Runner:
         self._likes_tried = 0
         self._per_keyword: dict[str, int] = {}
         self._stop_reason = "exhausted"
+        self._producer_failed = False
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -76,9 +77,9 @@ class Runner:
     # ---------------- 생산자 ----------------
 
     async def _produce(self, keyword: str) -> None:
-        self._emit(WorkerStarted(keyword))
         query = self._config.search_query(keyword)
         try:
+            self._emit(WorkerStarted(keyword))
             async for page_no, page in self._search.iter_pages(
                 query, self._config.start_date, self._config.end_date
             ):
@@ -104,7 +105,14 @@ class Runner:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            # Fix 3: 검색 실패를 조용히 삼키지 않는다. 모든 키워드의 검색이
+            # 이렇게 실패하면 소비자는 빈 큐만 보고 "exhausted"로 끝나는데,
+            # 그건 "검색했더니 결과가 없었다"와 구분되지 않는다 — 레거시가
+            # 침묵 속에 죽은 바로 그 모양이다. run()이 요약을 만들 때 이
+            # 플래그를 보고 stop_reason을 "error"로 승격한다.
+            self._producer_failed = True
             self._emit(LogLine(keyword, f"검색 중 오류: {exc}"))
+            self._emit(Aborted(f"'{keyword}' 검색이 실패했습니다: {exc}"))
 
     # ---------------- 소비자 ----------------
 
@@ -200,27 +208,38 @@ class Runner:
 
         closer = asyncio.create_task(close_queue_when_producers_done())
 
-        # R13: 소비자가 예상 못한 예외로 죽어도 그 시점까지의 집계는
-        # 보고되어야 한다 (결함 6의 또 다른 문). finally에서 프로듀서를
-        # 정리한 뒤 요약을 딱 한 번 만들고, 예외가 있었으면 보고 후 다시
-        # 던진다 — UI가 집계와 트레이스백을 둘 다 봐야 한다.
+        # R13 / Fix 1: 소비자가 예상 못한 예외로 죽거나 run() 자체가 밖에서
+        # 취소되어도 그 시점까지의 집계는 보고되어야 한다 (결함 6의 또 다른
+        # 문). 취소도 여느 예외와 같은 값으로 다룬다 — finally에서 프로듀서
+        # *와 소비자*를 모두 정리한 뒤(취소된 run()이 뭔가를 남기고 반환하지
+        # 않도록) 요약을 딱 한 번 만들고, 원래 있었던 예외를 다시 던진다.
+        # UI는 집계와 (트레이스백이든 취소든) 둘 다 봐야 한다.
         error: BaseException | None = None
         try:
             await consumer
-        except asyncio.CancelledError:
-            raise
+        except asyncio.CancelledError as exc:
+            error = exc
         except Exception as exc:
             error = exc
         finally:
             for task in producers:
                 task.cancel()
+            consumer.cancel()
             closer.cancel()
-            await asyncio.gather(*producers, closer, return_exceptions=True)
+            await asyncio.gather(*producers, consumer, closer, return_exceptions=True)
 
-        if error is not None:
+        if isinstance(error, asyncio.CancelledError):
+            # 취소는 운영자가 멈춰달라고 한 것과 같은 뜻이다.
+            self._stop_reason = "user"
+        elif error is not None:
             self._stop_reason = "error"
         elif self._stop.is_set() and self._stop_reason == "exhausted":
             self._stop_reason = "user"
+        elif self._producer_failed and self._stop_reason == "exhausted":
+            # Fix 3: 정상적으로 소진된 것처럼 보이지만 검색 자체가 실패했다면
+            # "결과 없음"과 구분되게 승격한다. 일부 키워드만 실패해도 같은
+            # 규칙을 적용한다 — 조기 종료는 시키지 않고, 요약만 정직해진다.
+            self._stop_reason = "error"
 
         summary = RunSummary(
             run_id=self._run_id,

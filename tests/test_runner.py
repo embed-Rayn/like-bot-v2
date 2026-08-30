@@ -179,9 +179,13 @@ async def test_user_stop_preserves_the_tally(tmp_path):
     summary = await runner.run()
     history.close()
 
+    # b1이 3개를 다 채우고, b2 처리 중 첫 좋아요(누적 4번째 호출)에서
+    # request_stop()이 호출된다. 정지 플래그는 블로그 사이에서만 확인하므로
+    # 진행 중이던 b2는 끝까지 마친다: b1(3) + b2(3) = 6개, 블로그 2개.
+    # b3는 큐에서 꺼내지기도 전에 정지 플래그에 걸려 시작조차 하지 않는다.
     assert summary.stop_reason == "user"
-    assert summary.likes_ok >= 4          # 진행 중이던 블로그를 마친다
-    assert summary.blogs_done >= 1
+    assert summary.likes_ok == 6
+    assert summary.blogs_done == 2
 
 
 async def test_already_liked_is_not_counted_as_success(tmp_path):
@@ -288,3 +292,65 @@ async def test_unexpected_exception_still_reports_tally_and_reraises(tmp_path):
     conn.close()
     assert row[0] is not None
     assert row[1] == "error"
+
+
+# ---- Fix 1: run() cancelled from outside must not lose the tally ----
+
+async def test_run_cancelled_externally_still_reports_tally(tmp_path):
+    from engine.events import RunFinished
+
+    events = []
+    calls = {"n": 0}
+    ready = asyncio.Event()
+    blocker = asyncio.Event()
+
+    async def like_fn(blog_id, log_no):
+        calls["n"] += 1
+        if calls["n"] == 4:
+            # b1은 이미 3개를 다 채웠다. b2의 첫 좋아요에서 멈춰 세우고
+            # 테스트가 이 시점에 확실히 cancel()을 걸 수 있게 한다.
+            ready.set()
+            await blocker.wait()   # 절대 set되지 않는다 — cancel()로만 풀린다
+        return LikeOutcome.SUCCESS
+
+    search = FakeSearch({"kw1": [["b1", "b2", "b3", "b4", "b5"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path), search, like_fn, events)
+    db_path = tmp_path / "h.db"
+
+    task = asyncio.create_task(runner.run())
+    await ready.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    history.close()
+
+    finished = [e for e in events if isinstance(e, RunFinished)]
+    assert len(finished) == 1             # RunFinished가 정확히 한 번 방출된다
+    assert finished[0].summary.likes_ok == 3     # b1만 완료된 상태에서 잘렸다
+    assert finished[0].summary.stop_reason == "user"
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT finished_at FROM runs WHERE run_id=?", ("run1",)
+    ).fetchone()
+    conn.close()
+    assert row[0] is not None             # runs 행이 열린 채로 남지 않는다
+
+
+# ---- Fix 3: total search failure must not be reported as normal completion ----
+
+async def test_search_failure_for_every_keyword_is_reported_as_error(tmp_path):
+    class FailingSearch:
+        async def iter_pages(self, query, start_date, end_date, first_page=1):
+            raise RuntimeError("network down")
+            yield  # pragma: no cover - unreachable, keeps this an async generator
+
+    search = FailingSearch()
+    runner, history = _runner(tmp_path, _config(tmp_path), search,
+                              await _always(LikeOutcome.SUCCESS))
+    summary = await runner.run()
+    history.close()
+
+    assert summary.stop_reason == "error"
+    assert summary.blogs_done == 0

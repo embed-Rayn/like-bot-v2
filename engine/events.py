@@ -54,7 +54,7 @@ class RunSummary:
     blogs_done: int = 0
     likes_ok: int = 0
     likes_tried: int = 0
-    stop_reason: str = "unknown"   # budget | exhausted | user | blocked | error
+    stop_reason: str = "unknown"   # budget | exhausted | user | blocked | not_logged_in | error
     per_keyword: dict[str, int] = field(default_factory=dict)
 
 
