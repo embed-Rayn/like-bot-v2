@@ -386,8 +386,13 @@ class MainWindow(QMainWindow):
 
         elif isinstance(event, RunFinished):
             s = event.summary
+            # I3: 드라이런 결과는 실제 공감을 누른 것이 아니므로, 요약 라벨이
+            # 진짜 실행과 글자 하나까지 같으면 안 된다 — runs 테이블은 이제
+            # dry_run 컬럼으로 구분되지만, 화면도 그래야 운영자가 착각하지
+            # 않는다.
+            prefix = "[드라이런] " if s.dry_run else ""
             self.summary_label.setText(
-                f"블로그 {s.blogs_done} · 공감 {s.likes_ok}/{s.likes_tried} "
+                f"{prefix}블로그 {s.blogs_done} · 공감 {s.likes_ok}/{s.likes_tried} "
                 f"· 사유 {format_stop_reason(s.stop_reason)}"
             )
 

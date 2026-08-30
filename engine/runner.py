@@ -206,7 +206,8 @@ class Runner:
 
     async def run(self) -> RunSummary:
         self._history.start_run(
-            self._run_id, self._config.account, self._config.keywords
+            self._run_id, self._config.account, self._config.keywords,
+            dry_run=self._config.dry_run,
         )
 
         producers = [
@@ -260,6 +261,7 @@ class Runner:
             likes_tried=self._likes_tried,
             stop_reason=self._stop_reason,
             per_keyword=dict(self._per_keyword),
+            dry_run=self._config.dry_run,
         )
         self._history.finish_run(
             self._run_id, summary.blogs_done, summary.likes_ok, summary.stop_reason

@@ -56,6 +56,7 @@ class RunSummary:
     likes_tried: int = 0
     stop_reason: str = "unknown"   # budget | exhausted | user | blocked | not_logged_in | error
     per_keyword: dict[str, int] = field(default_factory=dict)
+    dry_run: bool = False   # I3: 드라이런 결과를 실제 실행과 구분해 표시하기 위함
 
 
 @dataclass(frozen=True)

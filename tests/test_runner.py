@@ -243,6 +243,28 @@ async def test_not_logged_in_aborts_immediately(tmp_path):
     assert calls["n"] == 1                # 한 번만 시도하고 즉시 중단
 
 
+# ---- I3: RunSummary.dry_run must reflect the config, for the runs table + UI ----
+
+async def test_run_summary_carries_the_dry_run_flag(tmp_path):
+    search = FakeSearch({"kw1": [["blog_a"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, dry_run=True), search,
+                              await _always(LikeOutcome.SUCCESS))
+    summary = await runner.run()
+    history.close()
+
+    assert summary.dry_run is True
+
+
+async def test_run_summary_dry_run_flag_is_false_for_a_real_run(tmp_path):
+    search = FakeSearch({"kw1": [["blog_a"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, dry_run=False), search,
+                              await _always(LikeOutcome.SUCCESS))
+    summary = await runner.run()
+    history.close()
+
+    assert summary.dry_run is False
+
+
 # ---- Controller ruling 2 (R10): dry run must not write visit history ----
 
 async def test_dry_run_does_not_write_visit_history(tmp_path):

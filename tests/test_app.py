@@ -218,6 +218,31 @@ def test_close_event_retries_the_stop_when_already_pending(window, monkeypatch):
     assert routed, "재시도된 정지 요청이 브리지를 거치지 않았다"
 
 
+# ---------------- I3: 드라이런 요약은 눈에 띄게 표시되어야 한다 ----------------
+
+
+def test_summary_label_is_prefixed_for_a_dry_run(window):
+    from engine.events import RunFinished, RunSummary
+
+    window.on_event(RunFinished(RunSummary(
+        run_id="r1", blogs_done=3, likes_ok=9, likes_tried=9,
+        stop_reason="exhausted", dry_run=True,
+    )))
+
+    assert window.summary_label.text().startswith("[드라이런]")
+
+
+def test_summary_label_has_no_dry_run_marker_for_a_real_run(window):
+    from engine.events import RunFinished, RunSummary
+
+    window.on_event(RunFinished(RunSummary(
+        run_id="r1", blogs_done=3, likes_ok=9, likes_tried=9,
+        stop_reason="exhausted", dry_run=False,
+    )))
+
+    assert "드라이런" not in window.summary_label.text()
+
+
 async def test_run_engine_closes_session_and_skips_runner_when_stop_requested_first(
     window, monkeypatch
 ):

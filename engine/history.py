@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS runs (
     keywords     TEXT NOT NULL,
     blogs_done   INTEGER NOT NULL DEFAULT 0,
     likes_ok     INTEGER NOT NULL DEFAULT 0,
-    stop_reason  TEXT
+    stop_reason  TEXT,
+    dry_run      INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -51,7 +52,23 @@ class History:
         self.connection = sqlite3.connect(db_path)
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.executescript(SCHEMA)
+        self._migrate_add_dry_run_column()
         self.connection.commit()
+
+    def _migrate_add_dry_run_column(self) -> None:
+        """I3: dry_run을 구분하기 위한 컬럼.
+
+        `CREATE TABLE IF NOT EXISTS`는 이미 존재하는 테이블에는 새 컬럼을
+        추가하지 않는다. 이 프로젝트는 아직 배포된 DB가 없으므로 스키마에
+        컬럼을 추가하는 것만으로 충분하다고 볼 수도 있지만, 이 브랜치를
+        개발하며 이미 만들어 둔 (dry_run 컬럼이 없는) history.db를 여는
+        경우에도 죽지 않도록 필요하면 직접 추가한다.
+        """
+        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(runs)")}
+        if "dry_run" not in columns:
+            self.connection.execute(
+                "ALTER TABLE runs ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0"
+            )
 
     def close(self) -> None:
         self.connection.close()
@@ -88,12 +105,20 @@ class History:
         )
         self.connection.commit()
 
-    def start_run(self, run_id: str, account: str, keywords: list[str]) -> None:
+    def start_run(
+        self,
+        run_id: str,
+        account: str,
+        keywords: list[str],
+        *,
+        dry_run: bool = False,
+    ) -> None:
         self.connection.execute(
             """INSERT OR REPLACE INTO runs
-                 (run_id, started_at, account, keywords, blogs_done, likes_ok)
-               VALUES (?, ?, ?, ?, 0, 0)""",
-            (run_id, _now(), account, json.dumps(keywords, ensure_ascii=False)),
+                 (run_id, started_at, account, keywords, blogs_done, likes_ok, dry_run)
+               VALUES (?, ?, ?, ?, 0, 0, ?)""",
+            (run_id, _now(), account, json.dumps(keywords, ensure_ascii=False),
+             int(dry_run)),
         )
         self.connection.commit()
 
