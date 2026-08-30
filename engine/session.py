@@ -177,9 +177,24 @@ class BrowserSession:
         _write_secret(state_file, json.dumps(state).encode("utf-8"))
 
     async def close(self) -> None:
+        """호출을 반복해도 안전하다.
+
+        open()이 LoginError로 예외를 올리기 전에 이미 스스로 close()를
+        호출해 둔다(캡차 · 2차인증 · 자격증명 오류 등). 그런데
+        desktop/app.py의 _run_engine은 LoginError를 잡은 뒤 다시 한 번
+        close()를 부른다 — 그러면 이 핸들들이 None으로 리셋되지 않았을 때
+        `_pw.stop()` 등이 두 번째로 호출된다. 검증되지 않은 채로 그 지점에서
+        예외가 나면 원래의 BadCredentials가 가려지고 운영자에게 엉뚱한
+        원인이 표시된다. 끝에서 각 핸들을 None으로 되돌려 반복 호출을
+        아무 일도 하지 않는 것으로 만든다.
+        """
         if self._context is not None:
             await self._context.close()
         if self._browser is not None:
             await self._browser.close()
         if self._pw is not None:
             await self._pw.stop()
+        self._context = None
+        self._browser = None
+        self._pw = None
+        self.page = None

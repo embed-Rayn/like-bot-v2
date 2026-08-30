@@ -2,8 +2,10 @@ import sys
 
 import pytest
 
+from engine.paths import AppPaths
 from engine.session import (
     BadCredentials,
+    BrowserSession,
     CaptchaRequired,
     TwoFactorRequired,
     classify_login_page,
@@ -50,3 +52,29 @@ def test_encrypt_round_trips():
 def test_encrypted_blob_does_not_contain_the_plaintext():
     payload = b"NID_AUT_secret_value"
     assert payload not in encrypt_bytes(payload)
+
+
+# ---- MINOR: close()는 반복 호출에 안전해야 한다 ----
+# 실제 브라우저 없이도 확인할 수 있는 부분만 — 세 핸들이 전부 None인 채로
+# 시작해 close()를 두 번 불러도 예외 없이 끝나야 한다 (없는 핸들에 대한
+# .close()/.stop() 호출을 건너뛰는 기존 None 방어와, 끝에서 핸들을 다시
+# None으로 되돌리는 부분을 함께 검증한다).
+
+
+async def test_close_before_open_is_a_no_op():
+    session = BrowserSession(AppPaths.for_app())
+    await session.close()
+    assert session._browser is None
+    assert session._context is None
+    assert session._pw is None
+    assert session.page is None
+
+
+async def test_close_is_idempotent_when_called_twice():
+    session = BrowserSession(AppPaths.for_app())
+    await session.close()
+    await session.close()      # 두 번째 호출도 예외 없이 끝나야 한다
+    assert session._browser is None
+    assert session._context is None
+    assert session._pw is None
+    assert session.page is None

@@ -24,7 +24,12 @@ pytestmark = pytest.mark.browser
 async def test_open_closes_browser_and_playwright_when_login_fails(tmp_path, monkeypatch):
     """R8: 로그인 실패(캡차/2차인증/자격증명 등) 시 정리되는지 — 실제 브라우저까지
     정상적으로 기동한 뒤, 오직 `_is_logged_in`/`_login`만 흉내 낸다(계정/비밀번호
-    없이는 실제 네이버 로그인 페이지를 테스트할 수 없으므로)."""
+    없이는 실제 네이버 로그인 페이지를 테스트할 수 없으므로).
+
+    close()는 이제 핸들을 None으로 리셋해 반복 호출에 안전하다(MINOR: idempotent
+    close). 그래서 '실제로 브라우저를 기동했었는지'는 close() 직전에 핸들을
+    가로채 확인하고, close() 이후에는 핸들이 실제로 리셋됐는지를 검증한다.
+    """
     paths = AppPaths.for_app(tmp_path)
     session = BrowserSession(paths)
 
@@ -37,13 +42,29 @@ async def test_open_closes_browser_and_playwright_when_login_fails(tmp_path, mon
     monkeypatch.setattr(session, "_is_logged_in", fake_is_logged_in)
     monkeypatch.setattr(session, "_login", fake_login)
 
+    captured: dict[str, object] = {}
+    real_close = session.close
+
+    async def spy_close():
+        captured["browser"] = session._browser
+        captured["page"] = session.page
+        await real_close()
+
+    monkeypatch.setattr(session, "close", spy_close)
+
     with pytest.raises(BadCredentials):
         await session.open("test_account", lambda: "irrelevant", headless=True)
 
     # open()이 스스로 만든 브라우저/드라이버가 실제로 정리됐는지 확인한다.
-    assert session._browser is not None, "테스트가 실제로 브라우저를 기동했는지 확인"
-    assert session._browser.is_connected() is False
-    assert session.page.is_closed() is True
+    assert captured["browser"] is not None, "테스트가 실제로 브라우저를 기동했는지 확인"
+    assert captured["browser"].is_connected() is False
+    assert captured["page"].is_closed() is True
+
+    # close()가 핸들을 리셋해, 이 뒤에 또 close()를 불러도 안전하다.
+    assert session._browser is None
+    assert session._context is None
+    assert session._pw is None
+    assert session.page is None
 
 
 async def test_open_stops_playwright_driver_when_browser_launch_fails(tmp_path, monkeypatch):
