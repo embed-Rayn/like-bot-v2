@@ -31,6 +31,9 @@ def parse_search_response(raw: str | bytes) -> SearchPage:
     if not isinstance(result, dict):
         raise SearchParseError("응답에 result 객체가 없습니다.")
 
+    search_list = result.get("searchList") or []
+    raw_count = len(search_list)
+
     items = [
         SearchItem(
             blog_id=str(row.get("domainIdOrBlogId", "")).strip(),
@@ -39,7 +42,7 @@ def parse_search_response(raw: str | bytes) -> SearchPage:
             blog_name=str(row.get("blogName", "")),
             add_date_ms=int(row.get("addDate") or 0),
         )
-        for row in (result.get("searchList") or [])
+        for row in search_list
         if str(row.get("domainIdOrBlogId", "")).strip()
         and str(row.get("logNo", "")).strip()
     ]
@@ -48,4 +51,5 @@ def parse_search_response(raw: str | bytes) -> SearchPage:
         items=items,
         total_count=int(result.get("totalCount") or 0),
         per_page=int(result.get("pagePerCount") or 7),
+        raw_count=raw_count,
     )

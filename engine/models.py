@@ -21,6 +21,7 @@ class SearchPage:
     items: list[SearchItem]
     total_count: int
     per_page: int
+    raw_count: int  # Number of rows in searchList before filtering
 
     @property
     def is_empty(self) -> bool:
@@ -30,6 +31,11 @@ class SearchPage:
     def is_capped(self) -> bool:
         """totalCount가 상한에 걸렸는가. 진행률을 '1000+'로 표기해야 한다."""
         return self.total_count >= TOTAL_COUNT_CAP
+
+    @property
+    def dropped(self) -> int:
+        """Number of searchList rows dropped due to missing required fields."""
+        return self.raw_count - len(self.items)
 
 
 @dataclass(frozen=True)
