@@ -43,6 +43,10 @@ def classify_button_state(class_attr: str | None) -> LikeOutcome | None:
 async def press_like(
     page: Page, blog_id: str, log_no: str, *, dry_run: bool = False
 ) -> LikeOutcome:
+    """dry_run=True일 때의 SUCCESS는 '눌렀다'가 아니라 '버튼을 찾았고 누를 수
+    있었다'는 뜻이다 — 실제로 클릭하지 않으므로 진짜 공감과는 구분해서 읽어야
+    한다. 호출자가 dry_run을 넘겼으므로 그 사실은 이미 알고 있다.
+    """
     try:
         await page.goto(
             post_url(blog_id, log_no),
@@ -51,6 +55,11 @@ async def press_like(
         )
     except PlaywrightTimeout:
         return LikeOutcome.TIMEOUT
+    except PlaywrightError:
+        # DNS 실패, 연결 리셋, 페이지 크래시 등. 이 예외를 흘려보내면 실행
+        # 전체가 죽는다 — 수백 개 블로그를 몇 시간 도는 동안 일시적 네트워크
+        # 오류는 사실상 확실히 일어난다.
+        return LikeOutcome.ERROR
 
     if LOGIN_HOST in page.url:
         return LikeOutcome.NOT_LOGGED_IN
