@@ -64,3 +64,41 @@ def test_panel_uses_a_layout_not_fixed_geometry(app):
     """레거시의 절대좌표 배치를 반복하지 않는다."""
     panel = KeywordPanel(1)
     assert panel.layout() is not None
+
+
+# ---------------- 키워드별 실행 · 정지 버튼 ----------------
+#
+# 실행은 계정 단위로 하나다(결정 4). 그래서 어떤 실행이 도는 동안에는 모든
+# 패널의 ▶가 잠기고, ■는 그 실행에 참여한 패널에서만 살아 있다 — 참여하지
+# 않은 패널의 ■는 멈출 것이 없으므로 눌릴 수 있으면 안 된다.
+
+
+def test_participating_panel_can_be_stopped(app):
+    panel = KeywordPanel(1)
+    panel.set_running(True, participating=True)
+    assert panel.start_button.isEnabled() is False
+    assert panel.stop_button.isEnabled() is True
+
+
+def test_non_participating_panel_can_neither_start_nor_stop(app):
+    panel = KeywordPanel(2)
+    panel.set_running(True, participating=False)
+    assert panel.start_button.isEnabled() is False
+    assert panel.stop_button.isEnabled() is False
+
+
+def test_stop_button_turns_red_while_running(app):
+    panel = KeywordPanel(1)
+    assert "#b00020" not in panel.stop_button.styleSheet()
+
+    panel.set_running(True, participating=True)
+    assert "#b00020" in panel.stop_button.styleSheet()
+
+    panel.set_running(False)
+    assert "#b00020" not in panel.stop_button.styleSheet()
+
+
+def test_a_panel_that_cannot_stop_is_not_painted_red(app):
+    panel = KeywordPanel(3)
+    panel.set_running(True, participating=False)
+    assert "#b00020" not in panel.stop_button.styleSheet()

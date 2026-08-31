@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from desktop.bridge import EngineBridge
-from desktop.widgets import KeywordPanel
+from desktop.widgets import STOP_RUNNING_STYLE, KeywordPanel
 from engine.config import DEFAULTS, RunConfig, default_dates
 from engine.events import (
     Aborted,
@@ -126,9 +126,6 @@ class MainWindow(QMainWindow):
         self.summary_label = QLabel("대기 중")
 
         self.panels = [KeywordPanel(i + 1) for i in range(PANEL_COUNT)]
-        for panel in self.panels:
-            panel.start_button.hide()      # 실행은 계정 단위로 하나다
-            panel.stop_button.hide()
 
         form = QFormLayout()
         form.addRow("네이버 ID", self.account_input)
@@ -163,6 +160,14 @@ class MainWindow(QMainWindow):
 
         self.run_button.clicked.connect(self.on_run)
         self.stop_button.clicked.connect(self.on_stop)
+        for panel in self.panels:
+            # 패널의 ▶는 "이 키워드 하나로만 실행"이다. 실행 자체는 여전히
+            # 계정 단위로 하나다 (결정 4). 기본 인자로 패널을 묶어 두지 않으면
+            # 네 연결이 모두 마지막 패널을 가리킨다.
+            panel.start_button.clicked.connect(
+                lambda _checked=False, p=panel: self.on_run_keyword(p)
+            )
+            panel.stop_button.clicked.connect(self.on_stop)
         self.bridge.event_received.connect(self.on_event)
         self.bridge.finished.connect(self.on_finished)
         self.bridge.failed.connect(self.on_failed)
@@ -227,10 +232,10 @@ class MainWindow(QMainWindow):
             encoding="utf-8",
         )
 
-    def _collect_raw(self) -> dict:
+    def _collect_raw(self, keywords: list[str]) -> dict:
         return {
             "account": self.account_input.text(),
-            "keywords": [p.keyword() for p in self.panels if p.keyword()],
+            "keywords": keywords,
             "excludes": [w.strip() for w in self.exclude_input.text().split(",")],
             "start_date": self.start_date_input.text(),
             "end_date": self.end_date_input.text(),
@@ -243,7 +248,15 @@ class MainWindow(QMainWindow):
     # ---------------- 실행 ----------------
 
     def on_run(self) -> None:
-        config, errors = RunConfig.validate(self._collect_raw())
+        """상단 ▶ — 입력된 키워드 전부로 실행한다."""
+        self._start_run([p.keyword() for p in self.panels if p.keyword()])
+
+    def on_run_keyword(self, panel: KeywordPanel) -> None:
+        """패널 ▶ — 그 키워드 하나로만 실행한다."""
+        self._start_run([panel.keyword()])
+
+    def _start_run(self, keywords: list[str]) -> None:
+        config, errors = RunConfig.validate(self._collect_raw(keywords))
         if errors:
             # 결함 8: 잘못된 필드만 알린다. 나머지를 조용히 되돌리지 않는다.
             QMessageBox.warning(
@@ -264,11 +277,13 @@ class MainWindow(QMainWindow):
 
         self._save_config(config)
         self._stop_requested = False
+        running = set(config.keywords)
         for panel in self.panels:
             panel.set_alert("")
-            panel.set_running(True)
+            panel.set_running(True, participating=panel.keyword() in running)
         self.run_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.stop_button.setStyleSheet(STOP_RUNNING_STYLE)
         self.summary_label.setText("실행 중…")
 
         self.bridge.start(lambda emit: self._run_engine(config, stored, emit))
@@ -446,6 +461,7 @@ class MainWindow(QMainWindow):
             panel.set_running(False)
         self.run_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.stop_button.setStyleSheet("")
         self.runner = None
 
 

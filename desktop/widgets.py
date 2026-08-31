@@ -18,6 +18,12 @@ from PyQt6.QtWidgets import (
 
 MAX_LOG_BLOCKS = 2000
 
+# 앱 안의 경고색은 하나로 둔다 — 경고 배너와 "지금 멈출 수 있다"는 정지 버튼이
+# 같은 빨강을 쓴다.
+ALERT_RED = "#b00020"
+ALERT_STYLE = f"background: {ALERT_RED}; color: white; padding: 4px; border-radius: 3px;"
+STOP_RUNNING_STYLE = f"background: {ALERT_RED}; color: white; padding: 4px 10px; border-radius: 3px;"
+
 
 class KeywordPanel(QGroupBox):
     def __init__(self, index: int) -> None:
@@ -34,9 +40,7 @@ class KeywordPanel(QGroupBox):
         self.status_label = QLabel("대기 중")
         self.alert_label = QLabel("")
         self.alert_label.setWordWrap(True)
-        self.alert_label.setStyleSheet(
-            "background: #b00020; color: white; padding: 4px; border-radius: 3px;"
-        )
+        self.alert_label.setStyleSheet(ALERT_STYLE)
         self.alert_label.hide()
 
         self.log_view = QTextEdit()
@@ -57,10 +61,18 @@ class KeywordPanel(QGroupBox):
     def keyword(self) -> str:
         return self.keyword_input.text().strip()
 
-    def set_running(self, running: bool) -> None:
+    def set_running(self, running: bool, *, participating: bool = True) -> None:
+        """participating=False는 "다른 키워드로 실행 중"이라는 뜻이다.
+
+        실행은 계정 단위로 하나이므로(결정 4) 어떤 실행이 도는 동안에는 모든
+        패널의 ▶가 잠긴다. 반면 ■는 그 실행에 참여한 패널에서만 살아 있다 —
+        참여하지 않은 패널에는 멈출 것이 없다.
+        """
+        can_stop = running and participating
         self.start_button.setEnabled(not running)
-        self.stop_button.setEnabled(running)
+        self.stop_button.setEnabled(can_stop)
         self.keyword_input.setEnabled(not running)
+        self.stop_button.setStyleSheet(STOP_RUNNING_STYLE if can_stop else "")
 
     def append_log(self, text: str) -> None:
         self.log_view.append(text)

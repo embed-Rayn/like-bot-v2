@@ -467,3 +467,60 @@ async def test_run_engine_does_not_leak_a_history_connection_on_non_login_failur
 
     assert history_created["called"] is False
     assert window.runner is None
+
+
+# ---------------- 키워드별 실행 버튼 ----------------
+#
+# 버튼은 패널마다 있지만 실행은 여전히 계정 단위로 하나다(결정 4). 패널의
+# ▶는 "이 키워드 하나로만 실행"을 뜻한다 — 공감 속도 제한이 계정 단위
+# 하나뿐이라, 여러 실행을 동시에 돌리면 예산만 흩어지고 계정만 위험해진다.
+
+
+@pytest.fixture
+def started(window, monkeypatch):
+    """on_run을 엔진 없이 돌린다. 시작된 실행의 RunConfig를 붙잡아 돌려준다."""
+    captured = {}
+
+    monkeypatch.setattr("desktop.app.keyring.set_password", lambda *a, **k: None)
+    monkeypatch.setattr("desktop.app.keyring.get_password", lambda *a, **k: "pw")
+
+    def fake_run_engine(config, password, emit):
+        captured["config"] = config
+
+    monkeypatch.setattr(window, "_run_engine", fake_run_engine)
+    monkeypatch.setattr(window.bridge, "start", lambda factory: factory(lambda _e: None))
+
+    window.account_input.setText("someaccount")
+    window.panels[0].keyword_input.setText("헬스장")
+    window.panels[1].keyword_input.setText("필라테스")
+    return window, captured
+
+
+def test_panel_start_button_runs_only_that_panels_keyword(started):
+    window, captured = started
+
+    window.panels[1].start_button.click()
+
+    assert captured["config"].keywords == ["필라테스"]
+
+
+def test_top_run_button_still_runs_every_keyword(started):
+    window, captured = started
+
+    window.run_button.click()
+
+    assert captured["config"].keywords == ["헬스장", "필라테스"]
+
+
+def test_panel_buttons_are_visible(window):
+    assert window.panels[0].start_button.isHidden() is False
+    assert window.panels[0].stop_button.isHidden() is False
+
+
+def test_top_stop_button_turns_red_while_running(started):
+    window, _ = started
+    assert "#b00020" not in window.stop_button.styleSheet()
+
+    window.run_button.click()
+
+    assert "#b00020" in window.stop_button.styleSheet()
