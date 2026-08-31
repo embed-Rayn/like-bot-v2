@@ -51,3 +51,34 @@ def test_missing_class_is_not_confirmed():
 
 def test_unknown_class_is_not_confirmed():
     assert is_confirmed_liked("u_likeit_list_btn _button") is False
+
+
+# ---- 공감 버튼 셀렉터 (2026-08-31 실측) ----
+#
+# 글 하나에 같은 공감 버튼이 둘 렌더링된다.
+#   [0] 스크롤할 때 따라오는 플로팅 버튼 — 늘 뷰포트 바로 아래(y = 뷰포트 높이 + 6)에
+#       있어서 클릭이 "element is outside of the viewport"로 타임아웃된다.
+#   [1] 본문 안 버튼 — 조상이 #area_sympathy{logNo} 다. 스크롤해서 누를 수 있다.
+# 글 번호로 범위를 좁히면 같은 페이지에 딸려 오는 다른 글의 버튼을 누를 위험도 없다.
+
+def test_selector_is_scoped_to_the_post_number():
+    from engine.like import like_button_selector
+
+    selector = like_button_selector("224396233459")
+
+    assert "#area_sympathy224396233459" in selector
+    assert "u_likeit_button" in selector
+
+
+def test_selector_of_two_posts_differ():
+    from engine.like import like_button_selector
+
+    assert like_button_selector("111") != like_button_selector("222")
+
+
+def test_fallback_selector_is_not_scoped_to_a_post_number():
+    """스킨에 따라 id가 없을 수 있다. 그때 쓰는 대비책은 글 번호를 담지 않는다."""
+    from engine.like import LIKE_BUTTON_FALLBACK
+
+    assert "area_sympathy" not in LIKE_BUTTON_FALLBACK or "{" not in LIKE_BUTTON_FALLBACK
+    assert "u_likeit_button" in LIKE_BUTTON_FALLBACK

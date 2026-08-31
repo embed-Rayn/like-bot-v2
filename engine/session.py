@@ -9,11 +9,15 @@
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from engine.paths import AppPaths
 
@@ -22,6 +26,17 @@ LOGIN_URL = (
     "&url=https%3A%2F%2Fwww.naver.com&locale=ko_KR&svctype=1"
 )
 LOGIN_HOST = "nid.naver.com"
+LOGIN_TRANSITION_TIMEOUT_MS = 15_000
+# 수동 로그인은 사람이 추가 확인 문제를 푸는 시간이다. 넉넉해야 한다.
+MANUAL_LOGIN_TIMEOUT_S = 300
+MANUAL_LOGIN_POLL_S = 1.0
+LOGIN_ID = "#id"
+LOGIN_PW = "#pw"
+# 로그인 버튼은 반응형 레이아웃 때문에 DOM에 두 벌(column/row)로 들어 있고 그중
+# 한쪽만 보인다. 그래서 항상 "보이는 것"으로 좁혀서 클릭한다. 예전 `.btn_login`은
+# 2026-08-31 확인 시 페이지에서 사라져 있었다 — 실행 시점의 30초 타임아웃으로만
+# 드러났으므로 tests/test_login_page_contract.py가 이 세 셀렉터를 감시한다.
+LOGIN_BUTTON = "#loginBtn_column, #loginBtn_row"
 
 
 class LoginError(Exception):
@@ -44,8 +59,13 @@ class SessionExpired(LoginError):
     pass
 
 
-_CAPTCHA_HINTS = ("자동입력 방지", "captcha", "보안 문자")
-_TWO_FACTOR_HINTS = ("2단계 인증", "일회용 번호", "인증번호를 입력")
+# 2026-08-31 관측: 자동 입력으로 로그인하면 네이버가 "보안을 위해 추가 확인을
+# 해주세요" 화면(이미지 문제)을 띄운다. 문구에 "자동입력 방지"도 "보안 문자"도
+# 없으므로 별도 힌트가 필요하다.
+_CAPTCHA_HINTS = ("자동입력 방지", "captcha", "보안 문자", "추가 확인")
+# "일회용 번호"는 넣으면 안 된다 — 평범한 로그인 폼에도 "일회용 번호 로그인"
+# 링크가 늘 있어서 모든 실패가 2차 인증으로 오분류된다.
+_TWO_FACTOR_HINTS = ("2단계 인증", "인증번호를 입력")
 _BAD_CRED_HINTS = ("아이디 또는 비밀번호", "다시 확인해주세요", "로그인 정보가")
 
 
@@ -67,6 +87,24 @@ def classify_login_page(url: str, page_text: str) -> type[LoginError] | None:
     if any(h.lower() in haystack for h in _BAD_CRED_HINTS):
         return BadCredentials
     return LoginError
+
+
+def load_storage_state(state_file: Path) -> dict | None:
+    """저장된 세션을 Playwright가 받는 형태(dict)로 읽는다.
+
+    new_context(storage_state=...)는 파일 경로 아니면 dict만 받는다. JSON
+    문자열을 그대로 넘기면 그것을 경로로 여겨 FileNotFoundError를 내는데, 그
+    예외 메시지에 세션 쿠키 전체(NID_AUT 포함)가 실린다 — 로그·화면으로
+    자격증명이 새는 경로다 (2026-08-31 관측).
+
+    읽을 수 없는 세션은 None으로 돌려 새 로그인으로 넘긴다.
+    """
+    if not state_file.exists():
+        return None
+    try:
+        return json.loads(decrypt_bytes(state_file.read_bytes()).decode("utf-8"))
+    except Exception:
+        return None    # 손상된 세션은 무시하고 새로 로그인한다
 
 
 def encrypt_bytes(data: bytes) -> bytes:
@@ -114,18 +152,9 @@ class BrowserSession:
         headless: bool = False,
     ) -> "BrowserSession":
         state_file = self._paths.session_file(account)
-        storage_state = None
-        if state_file.exists():
-            try:
-                storage_state = decrypt_bytes(state_file.read_bytes()).decode("utf-8")
-            except Exception:
-                storage_state = None    # 손상된 세션은 무시하고 새로 로그인한다
 
         try:
-            self._pw = await async_playwright().start()
-            self._browser = await self._pw.chromium.launch(headless=headless)
-            self._context = await self._browser.new_context(storage_state=storage_state)
-            self.page = await self._context.new_page()
+            await self._start(state_file, headless=headless)
 
             if not await self._is_logged_in():
                 await self._login(account, password_supplier())
@@ -141,6 +170,74 @@ class BrowserSession:
             raise
         return self
 
+    async def _start(self, state_file: Path, *, headless: bool = False) -> None:
+        """브라우저·컨텍스트·탭을 연다. 저장된 세션이 있으면 실어 준다."""
+        storage_state = load_storage_state(state_file)
+
+        self._pw = await async_playwright().start()
+        self._browser = await self._pw.chromium.launch(headless=headless)
+        self._context = await self._browser.new_context(storage_state=storage_state)
+        self.page = await self._context.new_page()
+
+    async def wait_for_manual_login(
+        self,
+        *,
+        timeout_s: float = MANUAL_LOGIN_TIMEOUT_S,
+        poll_s: float = MANUAL_LOGIN_POLL_S,
+    ) -> bool:
+        """사람이 창에서 직접 로그인을 끝낼 때까지 기다린다.
+
+        _is_logged_in()과 달리 페이지를 이동시키지 않는다 — 운영자가 입력하고
+        있는 화면을 가로채면 로그인 자체가 불가능해진다. 쿠키만 들여다본다.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            cookies = await self._context.cookies()
+            if any(c["name"] == "NID_AUT" for c in cookies):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(poll_s)
+
+    async def bootstrap_manual(
+        self,
+        account: str,
+        *,
+        timeout_s: float = MANUAL_LOGIN_TIMEOUT_S,
+        notify: Callable[[str], None] | None = None,
+    ) -> bool:
+        """최초 1회 수동 로그인 — 자격증명을 입력하지 않고 세션만 저장한다.
+
+        네이버는 자동 입력 로그인에 "보안을 위해 추가 확인" 화면을 띄운다
+        (2026-08-31 관측). 그 화면은 사람이 풀어야 한다. 여기서 저장해 둔 세션
+        덕분에 이후 실행은 로그인 페이지를 거의 거치지 않는다 (결정 3).
+        """
+        state_file = self._paths.session_file(account)
+        say = notify or (lambda _message: None)
+        try:
+            await self._start(state_file, headless=False)
+
+            if await self._is_logged_in():
+                await self._save_state(state_file)
+                say("이미 로그인되어 있습니다. 세션을 갱신했습니다.")
+                return True
+
+            await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            say("열린 창에서 직접 로그인해 주세요. 완료를 기다립니다.")
+
+            if not await self.wait_for_manual_login(timeout_s=timeout_s):
+                say("시간 안에 로그인이 끝나지 않았습니다.")
+                return False
+            if not await self._is_logged_in():
+                say("로그인 쿠키는 생겼지만 세션이 확인되지 않았습니다.")
+                return False
+
+            await self._save_state(state_file)
+            say("로그인 확인됨 — 세션을 저장했습니다.")
+            return True
+        finally:
+            await self.close()
+
     async def _is_logged_in(self) -> bool:
         """실제로 로그인 상태인지 확인한다. 쿠키 존재만으로는 부족하다."""
         await self.page.goto("https://blog.naver.com/", wait_until="domcontentloaded")
@@ -154,13 +251,25 @@ class BrowserSession:
 
         # fill()은 탐지되기 쉽다. insert_text는 키 이벤트 없이 값을 넣는다
         # (레거시의 클립보드 붙여넣기와 같은 효과).
-        await self.page.click("#id")
+        await self.page.click(LOGIN_ID)
         await self.page.keyboard.insert_text(account)
-        await self.page.click("#pw")
+        await self.page.click(LOGIN_PW)
         await self.page.keyboard.insert_text(password)
 
-        await self.page.click(".btn_login")
-        await self.page.wait_for_load_state("domcontentloaded")
+        await self.page.locator(LOGIN_BUTTON).locator("visible=true").first.click()
+
+        # click()은 그 클릭이 일으킨 이동을 기다려 주지 않고,
+        # wait_for_load_state("domcontentloaded")는 현재 문서가 이미 로드돼
+        # 있으면 즉시 반환한다 — 그래서 전이가 끝나기 전의 로그인 폼을 읽고
+        # 실패로 오판했다(2026-08-31 관측). 로그인 호스트를 벗어날 때까지
+        # 기다리고, 끝내 벗어나지 못하면 그 화면을 분류한다(캡차·2차인증·오류).
+        try:
+            await self.page.wait_for_url(
+                lambda url: LOGIN_HOST not in url,
+                timeout=LOGIN_TRANSITION_TIMEOUT_MS,
+            )
+        except PlaywrightTimeout:
+            pass
 
         body_text = await self.page.inner_text("body")
         failure = classify_login_page(self.page.url, body_text)
@@ -171,8 +280,6 @@ class BrowserSession:
             raise SessionExpired("로그인 직후 세션이 확인되지 않았습니다.")
 
     async def _save_state(self, state_file: Path) -> None:
-        import json
-
         state = await self._context.storage_state()
         _write_secret(state_file, json.dumps(state).encode("utf-8"))
 

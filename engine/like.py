@@ -18,7 +18,21 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from engine.models import LikeOutcome
 from engine.session import LOGIN_HOST
 
-LIKE_BUTTON = "a.u_likeit_list_btn"
+# 2026-08-31 실측. 클래스가 u_likeit_list_btn → u_likeit_button _face 로 바뀌었고,
+# 글 하나에 같은 버튼이 둘 렌더링된다.
+#   [0] 스크롤을 따라오는 플로팅 버튼. 늘 뷰포트 바로 아래(y = 뷰포트 높이 + 6)에
+#       머물러서, 뷰포트를 키우든 부모를 스크롤하든 클릭이
+#       "element is outside of the viewport"로 타임아웃된다.
+#   [1] 본문 안 버튼. 조상이 #area_sympathy{logNo} 이고 스크롤해서 누를 수 있다.
+# 그래서 글 번호로 범위를 좁혀 본문 안 버튼만 고른다 — 같은 페이지에 딸려 오는
+# 다른 글의 버튼을 잘못 누를 위험도 함께 사라진다. on/off 토큰은 그대로여서
+# classify_button_state는 손대지 않는다.
+LIKE_BUTTON = "a.u_likeit_button._face"
+LIKE_BUTTON_FALLBACK = f"div.area_sympathy.pcol2 {LIKE_BUTTON}"
+
+
+def like_button_selector(log_no: str) -> str:
+    return f"#area_sympathy{log_no} {LIKE_BUTTON}"
 FRAME = "#mainFrame"
 GOTO_TIMEOUT_MS = 15_000
 BUTTON_TIMEOUT_MS = 6_000
@@ -86,13 +100,20 @@ async def press_like(
     if LOGIN_HOST in page.url:
         return LikeOutcome.NOT_LOGGED_IN
 
-    try:
-        button = page.frame_locator(FRAME).locator(LIKE_BUTTON).first
-        await button.wait_for(state="attached", timeout=BUTTON_TIMEOUT_MS)
-    except PlaywrightTimeout:
+    frame = page.frame_locator(FRAME)
+    button = None
+    for selector in (like_button_selector(log_no), LIKE_BUTTON_FALLBACK):
+        candidate = frame.locator(selector).first
+        try:
+            await candidate.wait_for(state="attached", timeout=BUTTON_TIMEOUT_MS)
+        except PlaywrightTimeout:
+            continue    # 스킨에 따라 id가 없을 수 있다 — 다음 셀렉터로
+        except PlaywrightError:
+            return LikeOutcome.ERROR
+        button = candidate
+        break
+    if button is None:
         return LikeOutcome.NO_BUTTON
-    except PlaywrightError:
-        return LikeOutcome.ERROR
 
     try:
         state = classify_button_state(await button.get_attribute("class"))
@@ -103,6 +124,9 @@ async def press_like(
             # 드라이런: 버튼을 찾는 데까지만. 클릭하지 않는다.
             return LikeOutcome.SUCCESS
 
+        # 본문 안 버튼은 글 아래쪽에 있어 처음에는 화면 밖이다. 스크롤하지
+        # 않고 클릭하면 "element is outside of the viewport"로 타임아웃난다.
+        await button.scroll_into_view_if_needed(timeout=BUTTON_TIMEOUT_MS)
         await button.click(timeout=BUTTON_TIMEOUT_MS)
 
         # 클릭이 실제로 반영됐는지 확인한다 — AJAX 응답을 기다리는
