@@ -31,9 +31,20 @@ Everything else in the design follows from that one sentence:
 
 ## Current Status
 
-The legacy implementation is present in `legacy/` and has been fully analyzed. **v2 has
-not been written yet** — we are in the design phase. See "v2 Design Decisions" below for
-what is settled and what is still open.
+The engine and the PyQt6 desktop app are implemented and were exercised end to end against
+the live site on 2026-08-31 — search → RSS → session reuse → real 공감 clicks — from both
+`tools/dryrun.py` and the desktop UI, single- and multi-keyword. Web/Linux is still deferred
+(build order 7).
+
+```
+engine/    search · posts(RSS) · session · like · runner · ratelimit · history · safety
+desktop/   app.py (MainWindow) · bridge.py (asyncio↔Qt) · widgets.py (KeywordPanel)
+tools/     login.py (수동 로그인 부트스트랩) · dryrun.py · refresh_fixtures.py
+tests/     unit + `contract` (live Naver, no login) + `browser` (needs chromium)
+```
+
+Run the app with `python -m desktop.app`. On a new machine, log in once with
+`python tools/login.py <네이버ID>` — see "Live-site facts" for why that step is manual.
 
 Do not treat anything in `legacy/` as the target architecture. It is reference material
 for behavior and intent only.
@@ -132,7 +143,61 @@ login (`)]}',` prefix, `pagePerCount=7`, `totalCount` capped at 1000, page 143 l
 Parallelism therefore lives in discovery; likes are one rate-limited stream on a single tab.
 
 Full design: `docs/superpowers/specs/2026-08-30-like-bot-v2-design.md`.
-Next step is an implementation plan; no v2 code is written yet.
+
+## Live-site facts (verified 2026-08-31)
+
+Naver changes its markup without notice — that is legacy defect 2, and it recurred. Every
+selector below is measured, and each is watched by a `browser`+`contract` test so the next
+change fails a test instead of a run.
+
+- **Login page.** `#id` / `#pw` unchanged. The submit button is `#loginBtn_column` /
+  `#loginBtn_row` — rendered twice for the responsive layout, so click the visible one. The
+  old `.btn_login` no longer exists.
+- **Automated credential entry is refused.** Typing ID/PW with Playwright lands on
+  "보안을 위해 추가 확인" (an image challenge). Do not try to defeat it — that is
+  bot-detection evasion and it risks the account. `tools/login.py` opens a window, the
+  operator logs in by hand, and the session is saved; later runs reuse it and never see the
+  login page. That is exactly what decision 3 meant by `storage_state` reuse.
+- **Login-failure text.** The plain login form always carries a "일회용 번호 로그인" link, so
+  that phrase must never be used as a two-factor hint — it makes every failure look like 2FA.
+- **공감 button.** `a.u_likeit_button._face` inside `frame_locator("#mainFrame")`; the `on` /
+  `off` class tokens still carry the state. A post renders **two** of them: a floating one
+  that trails the scroll and sits permanently just below the fold (never clickable — click()
+  times out with "element is outside of the viewport"), and the in-post one under
+  `#area_sympathy{logNo}`. Always scope to the post number, and
+  `scroll_into_view_if_needed()` before clicking.
+
+## Testing
+
+```
+python -m pytest -q                              # 층 1 — unit, no network, no browser
+python -m pytest -q -m contract                  # 층 2 — live Naver, not logged in, safe
+python -m pytest -q -m browser                   # 층 3 — needs `playwright install chromium`
+python tools/dryrun.py <ID> "<키워드>" --blogs 5   # 층 4 — logs in, finds the button, never clicks
+```
+
+Layers 2 and 3 are the early-warning system for Naver's markup changes; run them before
+blaming the code. Start any real run with 드라이런 (the UI checkbox, or the tool), then a
+small live run (방문 상한 3, 블로그당 공감 1) before anything larger.
+
+## Security rules
+
+- **Credentials never enter the repo.** `.env`, `accounts.csv`, `session.dat`,
+  `storage_state.json`, `data/` are gitignored. Check `git status` before every commit.
+- **The saved session is a credential.** `%LOCALAPPDATA%\like-bot-v2\sessions\{account}.dat`
+  holds NID_AUT / NID_SES encrypted with DPAPI. Whoever holds those cookies is logged in
+  without needing the password. Never print, log, or paste storage_state — a bug that handed
+  it to Playwright as a string once dumped the whole session into an exception message.
+- **If session cookies are ever exposed** (a traceback, a screenshot, a pasted log), treat it
+  as a credential leak and revoke them:
+  1. 네이버 내정보 → 로그인 기록 / 기기 관리에서 로그아웃 (or change the password). This is
+     the only step that actually invalidates the cookie — Naver holds the session, not us.
+  2. Delete the stale `sessions/{account}.dat`.
+  3. Re-run `python tools/login.py <네이버ID>`.
+  Deleting the local file alone invalidates nothing.
+- **TODO (2026-08-31):** the session created that day was exposed through the exception
+  message described above and still needs to be revoked by the steps above. Delete this
+  bullet once it is done.
 
 ## Conventions
 
