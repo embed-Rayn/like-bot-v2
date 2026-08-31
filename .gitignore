@@ -14,3 +14,4 @@ __pycache__/
 *.py[cod]
 like_bot_v2.egg-info/
 *.egg-info/
+.env
