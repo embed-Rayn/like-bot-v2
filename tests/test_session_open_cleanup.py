@@ -36,7 +36,7 @@ async def test_open_closes_browser_and_playwright_when_login_fails(tmp_path, mon
     async def fake_is_logged_in() -> bool:
         return False
 
-    async def fake_login(account: str, password: str) -> None:
+    async def fake_login(account: str, password: str, **_kwargs) -> None:
         raise BadCredentials("forced failure for test")
 
     monkeypatch.setattr(session, "_is_logged_in", fake_is_logged_in)

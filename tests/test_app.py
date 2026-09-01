@@ -390,7 +390,7 @@ async def test_run_engine_closes_session_and_skips_runner_when_stop_requested_fi
     class FakeSession:
         page = None
 
-        async def open(self, account, password_supplier):
+        async def open(self, account, password_supplier, **_kwargs):
             return self
 
         async def close(self):
@@ -435,7 +435,7 @@ async def test_run_engine_does_not_leak_a_history_connection_on_non_login_failur
     누락 등)로 실패해도, History는 open() 성공 이후에만 만들어지므로 닫을
     커넥션 자체가 없다 — 새는 커넥션이 생기지 않는다."""
     class FakeSession:
-        async def open(self, account, password_supplier):
+        async def open(self, account, password_supplier, **_kwargs):
             raise RuntimeError("chromium binary missing")
 
     history_created = {"called": False}
@@ -524,3 +524,114 @@ def test_top_stop_button_turns_red_while_running(started):
     window.run_button.click()
 
     assert "#b00020" in window.stop_button.styleSheet()
+
+
+# ---------------- 로그인: 저장된 비밀번호가 없어도 실행된다 ----------------
+#
+# 설계 결정 3은 세션 재사용이 핵심이다. 그런데 예전 게이트는 저장된 비밀번호가
+# 없으면 세션이 멀쩡해도 실행을 거부했다 — 세션만으로 돌 수 있다는 설계가
+# 화면에서 막혀 있었다. 비밀번호는 세션이 없을 때만 필요하다.
+
+
+@pytest.fixture
+def no_stored_password(window, monkeypatch):
+    """저장된 비밀번호가 없는 상태. 모달 경고는 테스트를 멈추므로 가로챈다."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    captured = {"warnings": []}
+
+    monkeypatch.setattr("desktop.app.keyring.set_password", lambda *a, **k: None)
+    monkeypatch.setattr("desktop.app.keyring.get_password", lambda *a, **k: None)
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **k: captured["warnings"].append(a[2:])
+    )
+
+    def fake_run_engine(config, password, emit):
+        captured["config"] = config
+        captured["password"] = password
+
+    monkeypatch.setattr(window, "_run_engine", fake_run_engine)
+    monkeypatch.setattr(window.bridge, "start", lambda factory: factory(lambda _e: None))
+
+    window.account_input.setText("someaccount")
+    window.panels[0].keyword_input.setText("헬스장")
+    return window, captured
+
+
+def test_run_starts_when_no_password_is_stored(no_stored_password):
+    """세션이 살아 있을 수 있으므로 비밀번호가 없다고 막지 않는다."""
+    window, captured = no_stored_password
+
+    window.run_button.click()
+
+    assert "config" in captured, (
+        f"저장된 비밀번호가 없다고 실행을 거부했습니다: {captured['warnings']}"
+    )
+    assert captured["password"] == "", (
+        f"비밀번호가 없으면 빈 문자열이어야 합니다: {captured['password']!r}"
+    )
+
+
+def test_missing_password_does_not_warn(no_stored_password):
+    window, captured = no_stored_password
+
+    window.run_button.click()
+
+    assert not captured["warnings"], "비밀번호가 없다고 경고를 띄웠습니다."
+
+
+# ---------------- 로그인이 막히면 운영자에게 알린다 ----------------
+
+
+def test_global_log_line_also_shows_in_the_summary_label(window):
+    """키워드가 빈 로그는 전역 메시지다 — 패널 로그에 묻히면 안 된다.
+
+    캡차 안내가 여기로 온다. 브라우저 창에서 무엇을 해야 하는지 모른 채
+    운영자가 기다리는 일이 없어야 한다.
+    """
+    from engine.events import LogLine
+
+    window.on_event(LogLine("", "브라우저 창에서 추가 확인(이미지) 문제를 풀어 주세요."))
+
+    assert "추가 확인" in window.summary_label.text()
+
+
+class _StopHere(Exception):
+    """가짜 세션이 open()에서 실행을 끊기 위한 신호."""
+
+
+async def test_run_engine_gives_the_session_a_challenge_callback(window, monkeypatch):
+    """session.open()에 안내 콜백이 전달되고, 그 콜백은 전역 로그를 낸다."""
+    seen = {}
+
+    class _FakeSession:
+        def __init__(self, _paths):
+            pass
+
+        async def open(self, _account, _supplier, **kwargs):
+            seen["on_challenge"] = kwargs.get("on_challenge")
+            raise _StopHere()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr("desktop.app.BrowserSession", _FakeSession)
+
+    window.account_input.setText("someaccount")
+    window.panels[0].keyword_input.setText("헬스장")
+    from desktop.app import RunConfig
+
+    config, errors = RunConfig.validate(window._collect_raw(["헬스장"]))
+    assert not errors, errors
+
+    events = []
+    with pytest.raises(_StopHere):
+        await window._run_engine(config, "pw", events.append)
+
+    callback = seen.get("on_challenge")
+    assert callback is not None, "session.open()에 안내 콜백을 넘기지 않았습니다."
+
+    callback("추가 확인이 필요합니다")
+    assert events, "콜백을 불러도 아무 이벤트가 나오지 않았습니다."
+    assert "추가 확인" in events[0].text
+    assert events[0].keyword == "", "안내는 전역 메시지여야 합니다."
