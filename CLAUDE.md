@@ -194,10 +194,10 @@ small live run (방문 상한 3, 블로그당 공감 1) before anything larger.
      the only step that actually invalidates the cookie — Naver holds the session, not us.
   2. Delete the stale `sessions/{account}.dat`.
   3. Re-run `python tools/login.py <네이버ID>`.
-  Deleting the local file alone invalidates nothing.
-- **TODO (2026-08-31):** the session created that day was exposed through the exception
-  message described above and still needs to be revoked by the steps above. Delete this
-  bullet once it is done.
+  Deleting the local file alone invalidates nothing. Verify rather than assume: load the
+  stored session headless and check the NID cookies — a revoked session comes back with
+  only `NID_JST`, since Naver clears `NID_AUT`/`NID_SES` itself. Done once on 2026-09-01;
+  a plain browser logout did revoke the stored session too.
 
 ## Conventions
 
