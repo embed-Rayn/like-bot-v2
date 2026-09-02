@@ -635,3 +635,98 @@ async def test_run_engine_gives_the_session_a_challenge_callback(window, monkeyp
     assert events, "콜백을 불러도 아무 이벤트가 나오지 않았습니다."
     assert "추가 확인" in events[0].text
     assert events[0].keyword == "", "안내는 전역 메시지여야 합니다."
+
+
+# ---------------- 배포본 부트스트랩 · 브라우저 확보 ----------------
+
+
+def test_bootstrap_points_a_frozen_build_at_the_app_browser_folder(tmp_path, monkeypatch):
+    import os
+    import sys
+
+    from desktop.app import bootstrap
+    from engine.paths import AppPaths
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+    paths = AppPaths.for_app(tmp_path)
+
+    bootstrap(paths)
+
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(paths.browsers_dir)
+
+
+def test_bootstrap_installs_a_crash_handler(tmp_path, monkeypatch):
+    """console=False 빌드에서는 트레이스백이 어디에도 남지 않는다."""
+    import sys
+
+    from desktop.app import bootstrap
+    from engine.paths import AppPaths
+
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+
+    bootstrap(AppPaths.for_app(tmp_path))
+
+    assert sys.excepthook is not sys.__excepthook__
+
+
+def test_crash_log_is_written_under_the_app_log_folder(tmp_path):
+    from desktop.app import write_crash_log
+    from engine.paths import AppPaths
+
+    paths = AppPaths.for_app(tmp_path)
+
+    written = write_crash_log(paths, "Traceback (most recent call last):\nBoom")
+
+    assert written.parent == paths.log_dir
+    assert "Boom" in written.read_text(encoding="utf-8")
+
+
+async def test_run_engine_secures_the_browser_before_opening_the_session(
+    window, monkeypatch
+):
+    """브라우저가 없으면 session.open()은 playwright 예외로 죽는다 — 그 전에 받는다."""
+    from engine.config import RunConfig
+    from engine.events import LogLine
+
+    order: list[str] = []
+
+    async def fake_ensure(on_line):
+        order.append("ensure")
+        on_line("브라우저 내려받는 중")
+
+    class FakeSession:
+        page = None
+
+        async def open(self, account, password_supplier, **_kwargs):
+            order.append("open")
+            return self
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr("desktop.app.ensure_chromium", fake_ensure)
+    monkeypatch.setattr("desktop.app.BrowserSession", lambda paths: FakeSession())
+
+    config, errors = RunConfig.validate({
+        "account": "acct",
+        "keywords": ["kw"],
+        "excludes": [],
+        "start_date": "2026-08-29",
+        "end_date": "2026-08-30",
+        "blog_limit": 10,
+        "likes_per_blog": 3,
+        "likes_per_minute": 6.0,
+        "dry_run": False,
+    })
+    assert errors == []
+
+    window._stop_requested = True  # open() 직후 반환시켜 Runner까지 가지 않게 한다
+    events: list[object] = []
+    await window._run_engine(config, "pw", events.append)
+
+    assert order == ["ensure", "open"]
+    assert any(
+        isinstance(e, LogLine) and e.text == "브라우저 내려받는 중" for e in events
+    )

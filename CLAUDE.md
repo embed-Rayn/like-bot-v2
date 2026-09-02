@@ -193,6 +193,50 @@ Layers 2 and 3 are the early-warning system for Naver's markup changes; run them
 blaming the code. Start any real run with 드라이런 (the UI checkbox, or the tool), then a
 small live run (방문 상한 3, 블로그당 공감 1) before anything larger.
 
+## Packaging (Windows exe)
+
+```
+python -m pip install -e ".[build]"
+python -m PyInstaller --noconfirm packaging/like-bot-v2.spec
+```
+
+Output is `dist/like-bot-v2/` (약 645MB, zip 280MB) — **onedir, not onefile**. Zip the
+folder to distribute it. onefile would unpack the playwright driver, the Qt plugins and
+chromium to a temp folder on every launch: slow to start and a frequent antivirus false
+positive. UPX is off for the same reason.
+
+**chromium ships inside the build.** The spec copies the newest `chromium-*` and
+`winldd-*` out of this machine's playwright cache, so the receiving PC needs no python, no
+Chrome and no download. `chromium_headless_shell-*` is deliberately left out: it is 272MB
+and useless here — `engine/session.py` always launches `headless=False`, because the login
+challenge needs a window a person can see.
+
+Where the browser is found, in order (`engine/browsers.py`):
+
+1. `PLAYWRIGHT_BROWSERS_PATH`, if the operator set it. Never overridden — otherwise there
+   is no way to point the app elsewhere and diagnosis is stuck.
+2. `sys._MEIPASS/ms-playwright`, when frozen **and** it actually holds a `chromium-*`
+   folder. An empty folder counts as absent: PyInstaller drops empty directories, so a
+   build made on a machine with no cached chromium ships without one.
+3. `%LOCALAPPDATA%\like-bot-v2\browsers` — the download target for that case.
+
+A dev run is left alone entirely and keeps using the machine's own ms-playwright cache;
+mixing the two is how "내 PC에선 되는데" happens.
+
+`_run_engine()` still calls `ensure_chromium()` before `session.open()`, which downloads
+only when step 3 applies. Its output is streamed to the log window **unparsed** — progress
+formats are someone else's markup (legacy defect 2).
+
+`console=False`, so an uncaught exception has nowhere to print. `bootstrap()` installs a
+`sys.excepthook` that appends to `%LOCALAPPDATA%\like-bot-v2\logs\crash.log` and shows a
+dialog. That file holds tracebacks — if an exception ever carries storage_state again
+(it did once), the session leaks into it and the security rules below apply.
+
+Two hooks the build needs and PyInstaller cannot infer (verified absent from
+pyinstaller-hooks-contrib 6.22): `collect_all("playwright")` for the driver, and
+`collect_entry_point("keyring.backends")` + `keyring.backends.Windows` — keyring resolves
+backends lazily, so without it the exe fails at password lookup, not at import.
+
 ## Security rules
 
 - **Credentials never enter the repo.** `.env`, `accounts.csv`, `session.dat`,

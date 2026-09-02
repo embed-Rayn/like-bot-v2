@@ -26,5 +26,5 @@ def test_ensure_creates_directories(tmp_path):
 
 def test_all_paths_live_under_root(tmp_path):
     p = AppPaths.for_app(tmp_path)
-    for path in (p.config_file, p.history_db, p.sessions_dir, p.log_dir):
+    for path in (p.config_file, p.history_db, p.sessions_dir, p.log_dir, p.browsers_dir):
         assert tmp_path in path.parents or path.parent == tmp_path

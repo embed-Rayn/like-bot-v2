@@ -44,6 +44,11 @@ class AppPaths:
     def log_dir(self) -> Path:
         return self.root / "logs"
 
+    @property
+    def browsers_dir(self) -> Path:
+        """배포본이 chromium을 내려받는 곳. 만들지 않는다 — playwright가 만든다."""
+        return self.root / "browsers"
+
     def session_file(self, account: str) -> Path:
         safe = _UNSAFE.sub("_", account.strip()) or "unknown"
         return self.sessions_dir / f"{safe}.dat"
