@@ -269,11 +269,12 @@ class MainWindow(QMainWindow):
         if password:
             keyring.set_password(KEYRING_SERVICE, config.account, password)
             self.password_input.clear()
-        stored = keyring.get_password(KEYRING_SERVICE, config.account)
-        if not stored:
-            QMessageBox.warning(self, "비밀번호 없음",
-                                "저장된 비밀번호가 없습니다. 한 번 입력해 주세요.")
-            return
+        # 비밀번호가 없어도 막지 않는다. 설계 결정 3의 핵심은 세션 재사용인데,
+        # 예전 게이트는 세션이 멀쩡해도 저장된 비밀번호가 없으면 실행을
+        # 거부해서 그 설계를 화면에서 봉쇄하고 있었다. 세션이 살아 있으면
+        # 로그인 자체를 하지 않고, 없으면 로그인 창이 열려 직접 하면 된다
+        # (engine/session.py의 _login — 빈 비밀번호는 자동 입력을 건너뛴다).
+        stored = keyring.get_password(KEYRING_SERVICE, config.account) or ""
 
         self._save_config(config)
         self._stop_requested = False
@@ -296,7 +297,14 @@ class MainWindow(QMainWindow):
         # 던진다. History 커넥션을 이보다 먼저 만들어 두면, LoginError가
         # 아닌 예외가 여기서 나는 경우 그 커넥션을 닫을 코드가 전혀 실행되지
         # 않고 새어 나간다. 성공한 뒤에만 만들면 이 문제 자체가 없다.
-        await session.open(config.account, lambda: password)
+        # 로그인이 캡차·2차인증으로 막히면 session.open()이 창을 닫지 않고
+        # 사람을 기다린다. 그동안 무엇을 해야 하는지 이 콜백으로 알린다 —
+        # 안내가 없으면 운영자는 멈춰 선 창 앞에서 이유를 모른다.
+        await session.open(
+            config.account,
+            lambda: password,
+            on_challenge=lambda message: emit(LogLine("", message)),
+        )
 
         # CRITICAL 2: session.open()이 캡차 · 로그인 대기로 오래 걸리는
         # 동안 정지가 눌렸을 수 있다. self.runner는 아직 없으므로 그 요청은
@@ -430,6 +438,10 @@ class MainWindow(QMainWindow):
         elif isinstance(event, LogLine):
             panel = self._panel_for(event.keyword) or self.panels[0]
             panel.append_log(event.text)
+            # 키워드가 빈 로그는 전역 메시지다(로그인 안내 등). 패널 로그에만
+            # 넣으면 묻힌다 — 지금 무엇을 해야 하는지 알려야 하는 문구다.
+            if not event.keyword:
+                self.summary_label.setText(event.text)
 
         elif isinstance(event, RunFinished):
             s = event.summary

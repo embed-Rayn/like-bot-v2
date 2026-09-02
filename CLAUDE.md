@@ -36,6 +36,10 @@ the live site on 2026-08-31 — search → RSS → session reuse → real 공감
 `tools/dryrun.py` and the desktop UI, single- and multi-keyword. Web/Linux is still deferred
 (build order 7).
 
+Logging in is done from the app: type 아이디/비밀번호 once and press 실행. If Naver puts up
+its 추가 확인 screen, the browser window stays open and waits for you — see "Live-site facts".
+`tools/login.py <네이버ID>` does the same thing from the CLI.
+
 ```
 engine/    search · posts(RSS) · session · like · runner · ratelimit · history · safety
 desktop/   app.py (MainWindow) · bridge.py (asyncio↔Qt) · widgets.py (KeywordPanel)
@@ -43,8 +47,7 @@ tools/     login.py (수동 로그인 부트스트랩) · dryrun.py · refresh_f
 tests/     unit + `contract` (live Naver, no login) + `browser` (needs chromium)
 ```
 
-Run the app with `python -m desktop.app`. On a new machine, log in once with
-`python tools/login.py <네이버ID>` — see "Live-site facts" for why that step is manual.
+Run the app with `python -m desktop.app`.
 
 Do not treat anything in `legacy/` as the target architecture. It is reference material
 for behavior and intent only.
@@ -153,11 +156,21 @@ change fails a test instead of a run.
 - **Login page.** `#id` / `#pw` unchanged. The submit button is `#loginBtn_column` /
   `#loginBtn_row` — rendered twice for the responsive layout, so click the visible one. The
   old `.btn_login` no longer exists.
-- **Automated credential entry is refused.** Typing ID/PW with Playwright lands on
+- **Automated credential entry triggers a challenge.** Typing ID/PW with Playwright lands on
   "보안을 위해 추가 확인" (an image challenge). Do not try to defeat it — that is
-  bot-detection evasion and it risks the account. `tools/login.py` opens a window, the
-  operator logs in by hand, and the session is saved; later runs reuse it and never see the
-  login page. That is exactly what decision 3 meant by `storage_state` reuse.
+  bot-detection evasion and it risks the account. Hand it to the operator instead:
+  `_login()` classifies why it stalled, reports that through `on_challenge`, and waits on
+  the open window (`MANUAL_LOGIN_TIMEOUT_S`, 300s) for a person to finish. Only a timeout
+  raises. So login has three shapes, and the desktop UI covers all of them:
+  | 상황 | 동작 |
+  | --- | --- |
+  | 세션 유효 | 로그인 페이지를 아예 거치지 않는다 (결정 3) |
+  | 세션 없음 + 비밀번호 있음 | 자동 입력 → 막히면 창을 열어둔 채 사람을 기다린다 |
+  | 세션 없음 + 비밀번호 없음 | 자동 입력을 건너뛰고 창만 열어 준다 |
+
+  The UI's 비밀번호 field feeds `keyring`, never the repo. A missing password is not an
+  error — it just means the third row. `tools/login.py` is the CLI form of that third row,
+  still useful for bootstrapping without opening the app.
 - **Login-failure text.** The plain login form always carries a "일회용 번호 로그인" link, so
   that phrase must never be used as a two-factor hint — it makes every failure look like 2FA.
 - **공감 button.** `a.u_likeit_button._face` inside `frame_locator("#mainFrame")`; the `on` /
@@ -194,10 +207,10 @@ small live run (방문 상한 3, 블로그당 공감 1) before anything larger.
      the only step that actually invalidates the cookie — Naver holds the session, not us.
   2. Delete the stale `sessions/{account}.dat`.
   3. Re-run `python tools/login.py <네이버ID>`.
-  Deleting the local file alone invalidates nothing.
-- **TODO (2026-08-31):** the session created that day was exposed through the exception
-  message described above and still needs to be revoked by the steps above. Delete this
-  bullet once it is done.
+  Deleting the local file alone invalidates nothing. Verify rather than assume: load the
+  stored session headless and check the NID cookies — a revoked session comes back with
+  only `NID_JST`, since Naver clears `NID_AUT`/`NID_SES` itself. Done once on 2026-09-01;
+  a plain browser logout did revoke the stored session too.
 
 ## Conventions
 

@@ -89,6 +89,20 @@ def classify_login_page(url: str, page_text: str) -> type[LoginError] | None:
     return LoginError
 
 
+_CHALLENGE_MESSAGE = {
+    CaptchaRequired: "브라우저 창에서 추가 확인(이미지) 문제를 풀어 주세요.",
+    TwoFactorRequired: "브라우저 창에서 2차 인증을 완료해 주세요.",
+    BadCredentials: "아이디 또는 비밀번호가 맞지 않습니다. 창에서 직접 로그인해 주세요.",
+}
+
+
+def challenge_message(failure: type[LoginError]) -> str:
+    """막힌 이유에 맞는 안내 문구. 운영자는 이걸 보고 창에서 무엇을 할지 안다."""
+    return _CHALLENGE_MESSAGE.get(
+        failure, "브라우저 창에서 로그인을 완료해 주세요."
+    )
+
+
 def load_storage_state(state_file: Path) -> dict | None:
     """저장된 세션을 Playwright가 받는 형태(dict)로 읽는다.
 
@@ -150,6 +164,7 @@ class BrowserSession:
         password_supplier: Callable[[], str],
         *,
         headless: bool = False,
+        on_challenge: Callable[[str], None] | None = None,
     ) -> "BrowserSession":
         state_file = self._paths.session_file(account)
 
@@ -157,7 +172,9 @@ class BrowserSession:
             await self._start(state_file, headless=headless)
 
             if not await self._is_logged_in():
-                await self._login(account, password_supplier())
+                await self._login(
+                    account, password_supplier(), on_challenge=on_challenge
+                )
                 await self._save_state(state_file)
         except Exception:
             # 캡차·2차인증·자격증명 오류는 정상 운영 중에도 자주 일어난다
@@ -246,35 +263,57 @@ class BrowserSession:
         cookies = await self._context.cookies()
         return any(c["name"] == "NID_AUT" for c in cookies)
 
-    async def _login(self, account: str, password: str) -> None:
+    async def _login(
+        self,
+        account: str,
+        password: str,
+        *,
+        on_challenge: Callable[[str], None] | None = None,
+        manual_timeout_s: float = MANUAL_LOGIN_TIMEOUT_S,
+    ) -> None:
+        """자동 입력으로 로그인하고, 막히면 그 창을 운영자에게 넘긴다.
+
+        예전에는 막힌 화면을 분류해 곧장 예외로 올렸고, open()의 except가
+        close()로 창을 닫았다 — 운영자는 눈앞의 추가 확인 문제를 풀 기회조차
+        없었다. 그래서 tools/login.py가 따로 필요했다. 이제는 창을 열어둔 채
+        기다린다. 문제를 푸는 것은 언제나 사람이다.
+        """
+        say = on_challenge or (lambda _message: None)
         await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
-        # fill()은 탐지되기 쉽다. insert_text는 키 이벤트 없이 값을 넣는다
-        # (레거시의 클립보드 붙여넣기와 같은 효과).
-        await self.page.click(LOGIN_ID)
-        await self.page.keyboard.insert_text(account)
-        await self.page.click(LOGIN_PW)
-        await self.page.keyboard.insert_text(password)
+        if password:
+            # fill()은 탐지되기 쉽다. insert_text는 키 이벤트 없이 값을 넣는다
+            # (레거시의 클립보드 붙여넣기와 같은 효과).
+            await self.page.click(LOGIN_ID)
+            await self.page.keyboard.insert_text(account)
+            await self.page.click(LOGIN_PW)
+            await self.page.keyboard.insert_text(password)
 
-        await self.page.locator(LOGIN_BUTTON).locator("visible=true").first.click()
+            await self.page.locator(LOGIN_BUTTON).locator("visible=true").first.click()
 
-        # click()은 그 클릭이 일으킨 이동을 기다려 주지 않고,
-        # wait_for_load_state("domcontentloaded")는 현재 문서가 이미 로드돼
-        # 있으면 즉시 반환한다 — 그래서 전이가 끝나기 전의 로그인 폼을 읽고
-        # 실패로 오판했다(2026-08-31 관측). 로그인 호스트를 벗어날 때까지
-        # 기다리고, 끝내 벗어나지 못하면 그 화면을 분류한다(캡차·2차인증·오류).
-        try:
-            await self.page.wait_for_url(
-                lambda url: LOGIN_HOST not in url,
-                timeout=LOGIN_TRANSITION_TIMEOUT_MS,
-            )
-        except PlaywrightTimeout:
-            pass
+            # click()은 그 클릭이 일으킨 이동을 기다려 주지 않고,
+            # wait_for_load_state("domcontentloaded")는 현재 문서가 이미 로드돼
+            # 있으면 즉시 반환한다 — 그래서 전이가 끝나기 전의 로그인 폼을 읽고
+            # 실패로 오판했다(2026-08-31 관측). 로그인 호스트를 벗어날 때까지
+            # 기다리고, 끝내 벗어나지 못하면 그 화면을 분류한다.
+            try:
+                await self.page.wait_for_url(
+                    lambda url: LOGIN_HOST not in url,
+                    timeout=LOGIN_TRANSITION_TIMEOUT_MS,
+                )
+            except PlaywrightTimeout:
+                pass
+        # 비밀번호가 없으면 폼을 건드리지 않는다. 빈 값을 밀어 넣어 봐야
+        # 네이버에 실패한 로그인 시도만 남는다 — 창만 열어 주면 된다.
 
         body_text = await self.page.inner_text("body")
         failure = classify_login_page(self.page.url, body_text)
         if failure is not None:
-            raise failure(f"로그인이 확인되지 않았습니다. 현재 주소: {self.page.url}")
+            # 왜 막혔는지는 그대로 분류해 운영자에게 알려주고(캡차인데 2차
+            # 인증이라고 안내하면 엉뚱한 곳을 보게 된다), 창은 열어 둔다.
+            say(challenge_message(failure))
+            if not await self.wait_for_manual_login(timeout_s=manual_timeout_s):
+                raise failure(f"로그인이 확인되지 않았습니다. 현재 주소: {self.page.url}")
 
         if not await self._is_logged_in():
             raise SessionExpired("로그인 직후 세션이 확인되지 않았습니다.")

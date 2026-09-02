@@ -208,3 +208,104 @@ def test_corrupt_state_file_is_ignored(tmp_path):
     state_file.write_bytes(b"not an encrypted json")
 
     assert load_storage_state(state_file) is None
+
+
+# ---- 자동 입력이 막히면 창을 닫지 말고 운영자에게 넘긴다 ----
+# 2026-08-31 관측: 자동 입력 로그인은 "보안을 위해 추가 확인" 화면을 부른다.
+# 예전에는 여기서 CaptchaRequired를 던졌고, open()의 except가 close()로 창을
+# 닫아버려 운영자는 눈앞의 문제를 풀 기회조차 없었다 — 그래서 tools/login.py를
+# 따로 써야 했다. 이제는 창을 열어둔 채 사람이 끝내기를 기다린다. 문제를
+# 프로그램이 푸는 것이 아니라 사람이 푼다.
+
+
+class _FakeContext:
+    """cookies()를 부를 때마다 준비된 답을 차례로 돌려준다."""
+
+    def __init__(self, *answers: list[dict]) -> None:
+        self._answers = list(answers)
+        self.calls = 0
+
+    async def cookies(self) -> list[dict]:
+        self.calls += 1
+        if len(self._answers) > 1:
+            return self._answers.pop(0)
+        return self._answers[0]
+
+
+class _FakeChallengePage(_FakeLoginPage):
+    """클릭해도 로그인 호스트를 벗어나지 못하고 추가 확인 화면에 머문다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.typed: list[str] = []
+        self.keyboard = self._recording_keyboard()
+
+    def _recording_keyboard(self):
+        typed = self.typed
+
+        class _Recorder:
+            async def insert_text(self, text: str) -> None:
+                typed.append(text)
+
+        return _Recorder()
+
+    async def wait_for_url(self, _predicate, **_kw) -> None:
+        self.waited = True      # 기다리기는 하지만 전이는 끝내 일어나지 않는다
+
+    async def inner_text(self, _selector: str) -> str:
+        return EXTRA_VERIFY_TEXT
+
+
+async def test_captcha_hands_the_window_to_the_operator(monkeypatch):
+    """추가 확인 화면이 떠도 예외를 던지지 않고, 사람이 끝내면 그대로 진행한다."""
+    session = BrowserSession(AppPaths.for_app())
+    session.page = _FakeChallengePage()
+    session._context = _FakeContext([{"name": "NID_AUT"}])   # 사람이 이미 끝냈다
+
+    async def logged_in(_self) -> bool:
+        return True
+
+    monkeypatch.setattr(BrowserSession, "_is_logged_in", logged_in)
+
+    seen: list[str] = []
+    await session._login("someid", "somepw", on_challenge=seen.append)
+
+    assert seen, "운영자에게 알리지 않고 조용히 기다렸습니다."
+    assert "추가 확인" in seen[0], f"캡차라고 알려주지 않았습니다: {seen[0]!r}"
+
+
+async def test_manual_handoff_timeout_raises_the_original_failure(monkeypatch):
+    """사람이 시간 안에 끝내지 못하면 원래의 실패 종류를 그대로 던진다."""
+    session = BrowserSession(AppPaths.for_app())
+    session.page = _FakeChallengePage()
+    session._context = _FakeContext([])      # 끝내 로그인되지 않는다
+
+    async def logged_in(_self) -> bool:
+        return False
+
+    monkeypatch.setattr(BrowserSession, "_is_logged_in", logged_in)
+
+    with pytest.raises(CaptchaRequired):
+        await session._login("someid", "somepw", manual_timeout_s=0)
+
+
+async def test_login_without_a_password_skips_autofill_and_waits(monkeypatch):
+    """비밀번호가 없으면 자동 입력을 아예 하지 않고 바로 사람에게 넘긴다.
+
+    저장된 세션이 없고 비밀번호도 없는 경우다. 빈 문자열을 폼에 밀어 넣으면
+    네이버에 실패한 로그인 시도가 기록될 뿐이므로 창만 열어 준다.
+    """
+    session = BrowserSession(AppPaths.for_app())
+    session.page = _FakeChallengePage()
+    session._context = _FakeContext([{"name": "NID_AUT"}])
+
+    async def logged_in(_self) -> bool:
+        return True
+
+    monkeypatch.setattr(BrowserSession, "_is_logged_in", logged_in)
+
+    await session._login("someid", "", on_challenge=lambda _m: None)
+
+    assert session.page.typed == [], (
+        f"비밀번호 없이도 폼에 입력했습니다: {session.page.typed!r}"
+    )
