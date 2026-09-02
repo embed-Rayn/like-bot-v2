@@ -33,7 +33,21 @@ def apply_browsers_env(paths: AppPaths) -> None:
         return
     if os.environ.get(ENV_VAR):
         return
-    os.environ[ENV_VAR] = str(paths.browsers_dir)
+    bundled = bundled_browsers_dir()
+    os.environ[ENV_VAR] = str(bundled if bundled is not None else paths.browsers_dir)
+
+
+def bundled_browsers_dir() -> Path | None:
+    """exe와 함께 실어 보낸 브라우저 폴더. 없으면 None.
+
+    폴더만 있고 chromium이 없으면 실어 보내지 않은 것과 같다 — 그 경우를 None으로
+    돌려보내야 앱이 내려받기로 넘어간다. 있는데도 또 받는 것보다 이쪽이 안전하다.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    candidate = Path(meipass) / "ms-playwright"
+    return candidate if chromium_present(candidate) else None
 
 
 def chromium_present(root: Path) -> bool:

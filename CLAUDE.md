@@ -200,25 +200,32 @@ python -m pip install -e ".[build]"
 python -m PyInstaller --noconfirm packaging/like-bot-v2.spec
 ```
 
-Output is `dist/like-bot-v2/` (약 205MB) — **onedir, not onefile**. Zip the folder to
-distribute it. onefile would unpack the playwright driver and the Qt plugins to a temp
-folder on every launch: slow to start and a frequent antivirus false positive. UPX is off
-for the same reason.
+Output is `dist/like-bot-v2/` (약 645MB, zip 280MB) — **onedir, not onefile**. Zip the
+folder to distribute it. onefile would unpack the playwright driver, the Qt plugins and
+chromium to a temp folder on every launch: slow to start and a frequent antivirus false
+positive. UPX is off for the same reason.
 
-**chromium is not bundled** (약 450MB on top of the 205MB). The build carries only the
-playwright driver (`node.exe` + `cli.js`), and the frozen app downloads a browser on its
-first real run:
+**chromium ships inside the build.** The spec copies the newest `chromium-*` and
+`winldd-*` out of this machine's playwright cache, so the receiving PC needs no python, no
+Chrome and no download. `chromium_headless_shell-*` is deliberately left out: it is 272MB
+and useless here — `engine/session.py` always launches `headless=False`, because the login
+challenge needs a window a person can see.
 
-- `bootstrap()` (desktop/app.py) sets `PLAYWRIGHT_BROWSERS_PATH` to
-  `%LOCALAPPDATA%\like-bot-v2\browsers` — **only when frozen**, and only if the operator
-  has not set it themselves. A dev run keeps using the machine's own ms-playwright cache;
-  mixing the two is how "내 PC에선 되는데" happens.
-- `_run_engine()` calls `ensure_chromium()` before `session.open()`, because a missing
-  browser otherwise surfaces as playwright's "Executable doesn't exist" mid-login. The
-  installer's output is streamed to the log window **unparsed** — progress formats are
-  someone else's markup (legacy defect 2).
-- `chromium_present()` ignores `chromium_headless_shell-*`: login needs a window a person
-  can see, so the headless shell alone is worthless here.
+Where the browser is found, in order (`engine/browsers.py`):
+
+1. `PLAYWRIGHT_BROWSERS_PATH`, if the operator set it. Never overridden — otherwise there
+   is no way to point the app elsewhere and diagnosis is stuck.
+2. `sys._MEIPASS/ms-playwright`, when frozen **and** it actually holds a `chromium-*`
+   folder. An empty folder counts as absent: PyInstaller drops empty directories, so a
+   build made on a machine with no cached chromium ships without one.
+3. `%LOCALAPPDATA%\like-bot-v2\browsers` — the download target for that case.
+
+A dev run is left alone entirely and keeps using the machine's own ms-playwright cache;
+mixing the two is how "내 PC에선 되는데" happens.
+
+`_run_engine()` still calls `ensure_chromium()` before `session.open()`, which downloads
+only when step 3 applies. Its output is streamed to the log window **unparsed** — progress
+formats are someone else's markup (legacy defect 2).
 
 `console=False`, so an uncaught exception has nowhere to print. `bootstrap()` installs a
 `sys.excepthook` that appends to `%LOCALAPPDATA%\like-bot-v2\logs\crash.log` and shows a

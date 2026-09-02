@@ -137,3 +137,44 @@ async def test_ensure_installs_into_an_empty_managed_folder(tmp_path, monkeypatc
 
     assert "Downloading Chromium" in lines
     assert lines[0] != "Downloading Chromium", "설치 전에 무슨 일이 일어나는지 먼저 알려야 한다"
+
+
+# ---------------- chromium을 함께 실은 배포본 ----------------
+
+
+def test_bundled_browsers_win_over_the_app_folder(tmp_path, monkeypatch):
+    """exe와 함께 chromium을 실어 보냈으면 그걸 쓴다 — 또 받을 이유가 없다."""
+    bundle = tmp_path / "bundle"
+    (bundle / "ms-playwright" / "chromium-1234").mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.delenv(ENV, raising=False)
+
+    apply_browsers_env(AppPaths.for_app(tmp_path / "appdata"))
+
+    assert __import__("os").environ[ENV] == str(bundle / "ms-playwright")
+
+
+def test_an_empty_bundle_folder_falls_back_to_the_app_folder(tmp_path, monkeypatch):
+    """폴더만 있고 브라우저가 없으면 실어 보내지 않은 것과 같다 — 받아야 한다."""
+    bundle = tmp_path / "bundle"
+    (bundle / "ms-playwright").mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.delenv(ENV, raising=False)
+    paths = AppPaths.for_app(tmp_path / "appdata")
+
+    apply_browsers_env(paths)
+
+    assert __import__("os").environ[ENV] == str(paths.browsers_dir)
+
+
+def test_a_build_without_bundled_browsers_still_uses_the_app_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
+    monkeypatch.delenv(ENV, raising=False)
+    paths = AppPaths.for_app(tmp_path / "appdata")
+
+    apply_browsers_env(paths)
+
+    assert __import__("os").environ[ENV] == str(paths.browsers_dir)
