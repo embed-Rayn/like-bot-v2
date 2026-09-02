@@ -193,6 +193,43 @@ Layers 2 and 3 are the early-warning system for Naver's markup changes; run them
 blaming the code. Start any real run with 드라이런 (the UI checkbox, or the tool), then a
 small live run (방문 상한 3, 블로그당 공감 1) before anything larger.
 
+## Packaging (Windows exe)
+
+```
+python -m pip install -e ".[build]"
+python -m PyInstaller --noconfirm packaging/like-bot-v2.spec
+```
+
+Output is `dist/like-bot-v2/` (약 205MB) — **onedir, not onefile**. Zip the folder to
+distribute it. onefile would unpack the playwright driver and the Qt plugins to a temp
+folder on every launch: slow to start and a frequent antivirus false positive. UPX is off
+for the same reason.
+
+**chromium is not bundled** (약 450MB on top of the 205MB). The build carries only the
+playwright driver (`node.exe` + `cli.js`), and the frozen app downloads a browser on its
+first real run:
+
+- `bootstrap()` (desktop/app.py) sets `PLAYWRIGHT_BROWSERS_PATH` to
+  `%LOCALAPPDATA%\like-bot-v2\browsers` — **only when frozen**, and only if the operator
+  has not set it themselves. A dev run keeps using the machine's own ms-playwright cache;
+  mixing the two is how "내 PC에선 되는데" happens.
+- `_run_engine()` calls `ensure_chromium()` before `session.open()`, because a missing
+  browser otherwise surfaces as playwright's "Executable doesn't exist" mid-login. The
+  installer's output is streamed to the log window **unparsed** — progress formats are
+  someone else's markup (legacy defect 2).
+- `chromium_present()` ignores `chromium_headless_shell-*`: login needs a window a person
+  can see, so the headless shell alone is worthless here.
+
+`console=False`, so an uncaught exception has nowhere to print. `bootstrap()` installs a
+`sys.excepthook` that appends to `%LOCALAPPDATA%\like-bot-v2\logs\crash.log` and shows a
+dialog. That file holds tracebacks — if an exception ever carries storage_state again
+(it did once), the session leaks into it and the security rules below apply.
+
+Two hooks the build needs and PyInstaller cannot infer (verified absent from
+pyinstaller-hooks-contrib 6.22): `collect_all("playwright")` for the driver, and
+`collect_entry_point("keyring.backends")` + `keyring.backends.Windows` — keyring resolves
+backends lazily, so without it the exe fails at password lookup, not at import.
+
 ## Security rules
 
 - **Credentials never enter the repo.** `.env`, `accounts.csv`, `session.dat`,

@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 import sys
+import traceback
 import uuid
+from datetime import datetime
+from pathlib import Path
+from types import TracebackType
 
 import httpx
 import keyring
@@ -30,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from desktop.bridge import EngineBridge
 from desktop.widgets import STOP_RUNNING_STYLE, KeywordPanel
+from engine.browsers import apply_browsers_env, ensure_chromium
 from engine.config import DEFAULTS, RunConfig, default_dates
 from engine.events import (
     Aborted,
@@ -290,6 +295,11 @@ class MainWindow(QMainWindow):
         self.bridge.start(lambda emit: self._run_engine(config, stored, emit))
 
     async def _run_engine(self, config: RunConfig, password: str, emit) -> object:
+        # 배포본은 chromium을 함께 싣지 않는다. 없으면 session.open()이
+        # playwright의 "Executable doesn't exist" 예외로 죽으므로, 창을 열기
+        # 전에 여기서 받아 둔다. 개발 실행에서는 아무 일도 하지 않는다.
+        await ensure_chromium(lambda text: emit(LogLine("", text)))
+
         session = BrowserSession(self.paths)
         # MINOR: session.open()은 실패하는 모든 경로(LoginError든, 브라우저
         # 바이너리 누락 같은 다른 예외든— engine/session.py 참고)에서
@@ -477,7 +487,47 @@ class MainWindow(QMainWindow):
         self.runner = None
 
 
+def write_crash_log(paths: AppPaths, text: str) -> Path:
+    """트레이스백을 파일로 남기고 그 경로를 돌려준다.
+
+    주의: 예외 메시지에 세션(storage_state)이 실리는 버그가 재발하면 이 파일에
+    그대로 남는다. 그런 일이 생기면 보안 규칙대로 파일을 지우고 세션을 폐기할 것.
+    """
+    paths.ensure()
+    target = paths.log_dir / "crash.log"
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with target.open("a", encoding="utf-8") as f:
+        f.write(f"\n===== {stamp} =====\n{text}")
+    return target
+
+
+def bootstrap(paths: AppPaths) -> None:
+    """Qt를 띄우기 전에 프로세스 수준 설정을 끝낸다.
+
+    console=False로 빌드하면 트레이스백이 어디에도 남지 않는다 — 배포본에서
+    앱이 그냥 사라지고 이유를 알 수 없게 된다. 그래서 excepthook을 갈아 끼운다.
+    """
+    apply_browsers_env(paths)
+
+    def on_uncaught(
+        kind: type[BaseException],
+        value: BaseException,
+        tb: TracebackType | None,
+    ) -> None:
+        text = "".join(traceback.format_exception(kind, value, tb))
+        target = write_crash_log(paths, text)
+        if QApplication.instance() is not None:
+            QMessageBox.critical(
+                None,
+                "오류",
+                f"예상치 못한 오류가 발생했습니다.\n\n{value}\n\n기록: {target}",
+            )
+
+    sys.excepthook = on_uncaught
+
+
 def main() -> None:
+    bootstrap(AppPaths.for_app())
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
