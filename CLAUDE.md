@@ -41,7 +41,7 @@ its 추가 확인 screen, the browser window stays open and waits for you — se
 `tools/login.py <네이버ID>` does the same thing from the CLI.
 
 ```
-engine/    search · posts(RSS) · session · like · runner · ratelimit · history · safety
+engine/    search · posts(RSS) · session · like · runner · ratelimit · history · safety · runlog
 desktop/   app.py (MainWindow) · bridge.py (asyncio↔Qt) · widgets.py (KeywordPanel)
 tools/     login.py (수동 로그인 부트스트랩) · dryrun.py · refresh_fixtures.py
 tests/     unit + `contract` (live Naver, no login) + `browser` (needs chromium)
@@ -231,6 +231,14 @@ formats are someone else's markup (legacy defect 2).
 `sys.excepthook` that appends to `%LOCALAPPDATA%\like-bot-v2\logs\crash.log` and shows a
 dialog. That file holds tracebacks — if an exception ever carries storage_state again
 (it did once), the session leaks into it and the security rules below apply.
+
+The same folder holds one `run-{시각}-{run_id}.jsonl` per run (`engine/runlog.py`), written
+by a tee around the desktop's `emit` callback — the engine still does not know who receives
+its events. The log opens **before** chromium and login, since a run that stalls at the
+challenge screen is exactly the one worth reading afterwards; `RunLog` swallows its own write
+failures, because losing a log must never cost a 공감. The newest 30 runs are kept and
+`crash.log` is never touched. The 📁 로그 폴더 button opens the folder. `LogLine.text` can
+carry exception messages, so these files inherit crash.log's risk and its security rules.
 
 Two hooks the build needs and PyInstaller cannot infer (verified absent from
 pyinstaller-hooks-contrib 6.22): `collect_all("playwright")` for the driver, and

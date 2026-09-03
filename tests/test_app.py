@@ -7,6 +7,8 @@
     스텁으로 바꾸면 실제 위젯으로 검증할 수 있다. Qt 내부를 흉내 내지는
     않는다.
 """
+import json
+
 import pytest
 
 pytest.importorskip("PyQt6.QtWidgets")
@@ -729,4 +731,139 @@ async def test_run_engine_secures_the_browser_before_opening_the_session(
     assert order == ["ensure", "open"]
     assert any(
         isinstance(e, LogLine) and e.text == "브라우저 내려받는 중" for e in events
+    )
+
+
+# ---------------- 실행 로그 파일 ----------------
+
+
+def _valid_config(**over):
+    from engine.config import RunConfig
+
+    raw = {
+        "account": "acct",
+        "keywords": ["kw"],
+        "excludes": [],
+        "start_date": "2026-08-29",
+        "end_date": "2026-08-30",
+        "blog_limit": 10,
+        "likes_per_blog": 3,
+        "likes_per_minute": 6.0,
+        "dry_run": False,
+    }
+    raw.update(over)
+    config, errors = RunConfig.validate(raw)
+    assert errors == [], errors
+    return config
+
+
+def _run_logs(window):
+    return sorted(window.paths.log_dir.glob("run-*.jsonl"))
+
+
+def _stub_session_that_stops(monkeypatch, on_open=None):
+    """세션을 가짜로 바꿔 Runner 직전에 실행을 멈춘다."""
+
+    class FakeSession:
+        page = None
+
+        def __init__(self, _paths):
+            pass
+
+        async def open(self, _account, _supplier, **kwargs):
+            if on_open is not None:
+                on_open(kwargs)
+
+        async def close(self):
+            pass
+
+    async def fake_ensure(on_line):
+        on_line("브라우저 확인 중")
+
+    monkeypatch.setattr("desktop.app.ensure_chromium", fake_ensure)
+    monkeypatch.setattr("desktop.app.BrowserSession", FakeSession)
+
+
+async def test_run_engine_writes_a_log_file_for_the_run(window, monkeypatch):
+    _stub_session_that_stops(monkeypatch)
+    window._stop_requested = True  # Runner까지 가지 않게 한다
+
+    await window._run_engine(_valid_config(), "pw", lambda _e: None)
+
+    files = _run_logs(window)
+    assert len(files) == 1, "실행 로그 파일이 남지 않았습니다."
+    header = json.loads(files[0].read_text(encoding="utf-8").splitlines()[0])
+    assert header["type"] == "RunStarted"
+    assert header["account"] == "acct"
+    assert header["keywords"] == ["kw"]
+
+
+async def test_run_engine_logs_events_that_also_reach_the_ui(window, monkeypatch):
+    """파일 기록은 UI로 가는 이벤트를 가로채지 않는다 — 갈래를 하나 더 낼 뿐이다."""
+    _stub_session_that_stops(monkeypatch)
+    window._stop_requested = True
+
+    events: list[object] = []
+    await window._run_engine(_valid_config(), "pw", events.append)
+
+    from engine.events import LogLine
+
+    assert any(isinstance(e, LogLine) and e.text == "브라우저 확인 중" for e in events)
+    written = _run_logs(window)[0].read_text(encoding="utf-8")
+    assert "브라우저 확인 중" in written
+
+
+async def test_run_engine_logs_the_login_challenge_notice(window, monkeypatch):
+    """로그인이 막혀 중단된 실행이야말로 나중에 들여다볼 이유가 크다."""
+
+    def raise_challenge(kwargs):
+        kwargs["on_challenge"]("추가 확인이 필요합니다")
+
+    _stub_session_that_stops(monkeypatch, on_open=raise_challenge)
+    window._stop_requested = True
+
+    await window._run_engine(_valid_config(), "pw", lambda _e: None)
+
+    written = _run_logs(window)[0].read_text(encoding="utf-8")
+    assert "추가 확인이 필요합니다" in written
+
+
+async def test_run_engine_closes_the_log_when_the_run_blows_up(window, monkeypatch):
+    """예외로 죽어도 그때까지의 기록은 파일에 남아 있어야 한다."""
+
+    def boom(_kwargs):
+        raise _StopHere()
+
+    _stub_session_that_stops(monkeypatch, on_open=boom)
+
+    with pytest.raises(_StopHere):
+        await window._run_engine(_valid_config(), "pw", lambda _e: None)
+
+    written = _run_logs(window)[0].read_text(encoding="utf-8")
+    assert "브라우저 확인 중" in written
+
+
+async def test_run_engine_reuses_one_run_id_for_log_and_runner(window, monkeypatch):
+    _stub_session_that_stops(monkeypatch)
+    window._stop_requested = True
+
+    await window._run_engine(_valid_config(), "pw", lambda _e: None)
+
+    path = _run_logs(window)[0]
+    header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert path.name.endswith(f"-{header['run_id']}.jsonl")
+
+
+def test_log_folder_button_opens_the_log_directory(window, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        "desktop.app.QDesktopServices.openUrl", lambda url: opened.append(url)
+    )
+
+    window.log_button.click()
+
+    assert window.paths.log_dir.is_dir(), "폴더가 없으면 탐색기가 빈손으로 열린다."
+    assert opened, "로그 폴더 버튼이 아무것도 열지 않았습니다."
+    assert opened[0].toLocalFile().replace("/", "\\").rstrip("\\") == str(
+        window.paths.log_dir
     )

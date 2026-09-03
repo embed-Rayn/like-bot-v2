@@ -14,7 +14,8 @@ from types import TracebackType
 
 import httpx
 import keyring
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QCloseEvent, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -52,6 +53,7 @@ from engine.models import TOTAL_COUNT_CAP, LikeOutcome
 from engine.paths import AppPaths
 from engine.posts import PostsClient
 from engine.ratelimit import RateLimiter
+from engine.runlog import open_run_log
 from engine.runner import Runner
 from engine.safety import BlockDetector
 from engine.search import SearchClient
@@ -128,6 +130,8 @@ class MainWindow(QMainWindow):
         self.run_button = QPushButton("▶ 전체 실행")
         self.stop_button = QPushButton("■ 정지")
         self.stop_button.setEnabled(False)
+        self.log_button = QPushButton("📁 로그 폴더")
+        self.log_button.setToolTip("실행 기록이 남는 폴더를 엽니다")
         self.summary_label = QLabel("대기 중")
 
         self.panels = [KeywordPanel(i + 1) for i in range(PANEL_COUNT)]
@@ -146,6 +150,7 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         buttons.addWidget(self.run_button)
         buttons.addWidget(self.stop_button)
+        buttons.addWidget(self.log_button)
         buttons.addStretch(1)
         buttons.addWidget(self.summary_label)
 
@@ -165,6 +170,7 @@ class MainWindow(QMainWindow):
 
         self.run_button.clicked.connect(self.on_run)
         self.stop_button.clicked.connect(self.on_stop)
+        self.log_button.clicked.connect(self.on_open_log_folder)
         for panel in self.panels:
             # 패널의 ▶는 "이 키워드 하나로만 실행"이다. 실행 자체는 여전히
             # 계정 단위로 하나다 (결정 4). 기본 인자로 패널을 묶어 두지 않으면
@@ -294,60 +300,83 @@ class MainWindow(QMainWindow):
 
         self.bridge.start(lambda emit: self._run_engine(config, stored, emit))
 
-    async def _run_engine(self, config: RunConfig, password: str, emit) -> object:
-        # 배포본은 chromium을 함께 싣지 않는다. 없으면 session.open()이
-        # playwright의 "Executable doesn't exist" 예외로 죽으므로, 창을 열기
-        # 전에 여기서 받아 둔다. 개발 실행에서는 아무 일도 하지 않는다.
-        await ensure_chromium(lambda text: emit(LogLine("", text)))
+    async def _run_engine(self, config: RunConfig, password: str, emit_ui) -> object:
+        # 실행 기록은 브라우저를 켜기 전부터 남긴다. 로그인이 막혀 중단된
+        # 실행이야말로 나중에 들여다볼 이유가 크고, console=False로 빌드한
+        # 배포본은 창을 닫고 나면 물어볼 데가 없다.
+        run_id = uuid.uuid4().hex[:12]
+        with open_run_log(self.paths, run_id, config) as runlog:
+            def emit(event) -> None:
+                # 파일 기록은 갈래를 하나 더 낼 뿐, UI로 가는 길을 막지 않는다.
+                # RunLog는 쓰기에 실패해도 조용히 포기한다 — 로그를 남기려다
+                # 공감을 못 누르는 것은 본말전도다.
+                runlog.write(event)
+                emit_ui(event)
 
-        session = BrowserSession(self.paths)
-        # MINOR: session.open()은 실패하는 모든 경로(LoginError든, 브라우저
-        # 바이너리 누락 같은 다른 예외든— engine/session.py 참고)에서
-        # 스스로 브라우저/드라이버를 정리하고 원래 예외를 그대로 다시
-        # 던진다. History 커넥션을 이보다 먼저 만들어 두면, LoginError가
-        # 아닌 예외가 여기서 나는 경우 그 커넥션을 닫을 코드가 전혀 실행되지
-        # 않고 새어 나간다. 성공한 뒤에만 만들면 이 문제 자체가 없다.
-        # 로그인이 캡차·2차인증으로 막히면 session.open()이 창을 닫지 않고
-        # 사람을 기다린다. 그동안 무엇을 해야 하는지 이 콜백으로 알린다 —
-        # 안내가 없으면 운영자는 멈춰 선 창 앞에서 이유를 모른다.
-        await session.open(
-            config.account,
-            lambda: password,
-            on_challenge=lambda message: emit(LogLine("", message)),
-        )
+            # 배포본은 chromium을 함께 싣지 않는다. 없으면 session.open()이
+            # playwright의 "Executable doesn't exist" 예외로 죽으므로, 창을 열기
+            # 전에 여기서 받아 둔다. 개발 실행에서는 아무 일도 하지 않는다.
+            await ensure_chromium(lambda text: emit(LogLine("", text)))
 
-        # CRITICAL 2: session.open()이 캡차 · 로그인 대기로 오래 걸리는
-        # 동안 정지가 눌렸을 수 있다. self.runner는 아직 없으므로 그 요청은
-        # 이 플래그에만 남아 있다 — Runner를 만들기 전에 여기서 확인한다.
-        # 그러지 않으면 이미 정지를 요청한 운영자 앞에서 실행이 그대로
-        # 시작되고, 창은 (버그 수정 전처럼) 실행이 끝날 때까지 닫히지 않는다.
-        if self._stop_requested:
-            await session.close()
-            return None
-
-        history = History(self.paths.history_db)
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
-            async def like_fn(blog_id: str, log_no: str):
-                return await press_like(
-                    session.page, blog_id, log_no, dry_run=config.dry_run
-                )
-
-            self.runner = Runner(
-                config=config,
-                history=history,
-                search=SearchClient(http),
-                posts=PostsClient(http),
-                like_fn=like_fn,
-                limiter=RateLimiter(config.likes_per_minute),
-                detector=BlockDetector(),
-                emit=emit,
-                run_id=uuid.uuid4().hex[:12],
+            session = BrowserSession(self.paths)
+            # MINOR: session.open()은 실패하는 모든 경로(LoginError든, 브라우저
+            # 바이너리 누락 같은 다른 예외든— engine/session.py 참고)에서
+            # 스스로 브라우저/드라이버를 정리하고 원래 예외를 그대로 다시
+            # 던진다. History 커넥션을 이보다 먼저 만들어 두면, LoginError가
+            # 아닌 예외가 여기서 나는 경우 그 커넥션을 닫을 코드가 전혀 실행되지
+            # 않고 새어 나간다. 성공한 뒤에만 만들면 이 문제 자체가 없다.
+            # 로그인이 캡차·2차인증으로 막히면 session.open()이 창을 닫지 않고
+            # 사람을 기다린다. 그동안 무엇을 해야 하는지 이 콜백으로 알린다 —
+            # 안내가 없으면 운영자는 멈춰 선 창 앞에서 이유를 모른다.
+            await session.open(
+                config.account,
+                lambda: password,
+                on_challenge=lambda message: emit(LogLine("", message)),
             )
-            try:
-                return await self.runner.run()
-            finally:
+
+            # CRITICAL 2: session.open()이 캡차 · 로그인 대기로 오래 걸리는
+            # 동안 정지가 눌렸을 수 있다. self.runner는 아직 없으므로 그 요청은
+            # 이 플래그에만 남아 있다 — Runner를 만들기 전에 여기서 확인한다.
+            # 그러지 않으면 이미 정지를 요청한 운영자 앞에서 실행이 그대로
+            # 시작되고, 창은 (버그 수정 전처럼) 실행이 끝날 때까지 닫히지 않는다.
+            if self._stop_requested:
                 await session.close()
-                history.close()
+                return None
+
+            history = History(self.paths.history_db)
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
+                async def like_fn(blog_id: str, log_no: str):
+                    return await press_like(
+                        session.page, blog_id, log_no, dry_run=config.dry_run
+                    )
+
+                self.runner = Runner(
+                    config=config,
+                    history=history,
+                    search=SearchClient(http),
+                    posts=PostsClient(http),
+                    like_fn=like_fn,
+                    limiter=RateLimiter(config.likes_per_minute),
+                    detector=BlockDetector(),
+                    emit=emit,
+                    run_id=run_id,
+                )
+                try:
+                    return await self.runner.run()
+                finally:
+                    await session.close()
+                    history.close()
+
+    def on_open_log_folder(self) -> None:
+        """실행 기록이 쌓이는 폴더를 탐색기로 연다.
+
+        경로를 안내문으로만 알려 주면 운영자는 그것을 손으로 옮겨 적어야 하고,
+        그러면 기록이 있어도 실제로는 아무도 열어 보지 않는다.
+        """
+        # 한 번도 실행하지 않은 상태에서도 눌릴 수 있다 — 없는 폴더를 열면
+        # 탐색기가 빈손으로 뜬다.
+        self.paths.ensure()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.log_dir)))
 
     def on_stop(self) -> None:
         # CRITICAL 2: self.runner가 아직 없어도(브라우저 기동 · 로그인 대기
