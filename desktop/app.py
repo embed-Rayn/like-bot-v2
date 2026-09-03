@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from desktop.bridge import EngineBridge
+from desktop.firstrun import ensure_chromium
 from desktop.widgets import STOP_RUNNING_STYLE, KeywordPanel
 from engine.config import DEFAULTS, RunConfig, default_dates
 from engine.events import (
@@ -479,6 +480,11 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    # chromium은 exe에 들어 있지 않다. 창을 띄우기 전에 확인한다 — 그러지
+    # 않으면 아이디와 비밀번호를 다 넣고 실행을 누른 뒤에야 session.open()에서
+    # 정체 모를 예외로 터진다. 운영자가 취소하면 앱을 열지 않는다.
+    if not ensure_chromium():
+        sys.exit(1)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

@@ -15,3 +15,6 @@ __pycache__/
 like_bot_v2.egg-info/
 *.egg-info/
 .env
+
+# 개발 가상환경
+.venv/
