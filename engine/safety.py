@@ -26,11 +26,18 @@ class BlockDetector:
     def __init__(
         self,
         *,
-        consecutive_failures: int = 5,
+        consecutive_failures: int = 1000,
         window: int = 20,
         min_success_rate: float = 0.3,
         no_button_streak: int = 15,
     ) -> None:
+        # 연속 실패 상한은 운영자가 1000으로 올려 달라고 한 값이다 (2026-09-07).
+        # 사실상 이 신호 하나로는 멈추지 않는다는 뜻이다. 남은 안전장치는 셋:
+        # BLOCKED(직접 신호)와 NOT_LOGGED_IN(러너가 즉시 끊는다)은 그대로이고,
+        # 실패가 이어지면 실제로 먼저 걸리는 것은 성공률 창이다 — 최근 20건의
+        # 성공률이 30% 미만이면 중단한다. 즉 계속 실패하는 실행은 5회가 아니라
+        # 20회 남짓에서 멈춘다. 계정 안전은 여전히 1급 요구사항이므로
+        # (CLAUDE.md), 이 값을 올렸다고 속도 제한까지 함께 풀지 말 것.
         self._limit = consecutive_failures
         self._window_size = window
         self._min_rate = min_success_rate
