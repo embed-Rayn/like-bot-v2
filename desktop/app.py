@@ -99,6 +99,8 @@ class MainWindow(QMainWindow):
         # on_stop이 할 일이 없어 보이면 안 된다 — 이 플래그가 요청 자체를
         # 기억해 두고, _run_engine이 session.open()에서 돌아오는 즉시 확인한다.
         self._stop_requested = False
+        # 이번 실행에 참여한 키워드. 비어 있으면 실행 정보가 아직 없다는 뜻이다.
+        self._participating: set[str] = set()
 
         self.account_input = QLineEdit()
         self.password_input = QLineEdit()
@@ -290,6 +292,10 @@ class MainWindow(QMainWindow):
         self._save_config(config)
         self._stop_requested = False
         running = set(config.keywords)
+        # 중단 배너를 어디에 띄울지 판단하려면 "이번 실행에 참여한 키워드"를
+        # 기억해야 한다. 이것이 없으면 Aborted가 4개 패널 전부로 방송되어,
+        # 참여하지도 않은 빈 패널까지 중단으로 보인다.
+        self._participating = set(running)
         for panel in self.panels:
             panel.set_alert("")
             panel.set_running(True, participating=panel.keyword() in running)
@@ -423,6 +429,17 @@ class MainWindow(QMainWindow):
 
     # ---------------- 이벤트 ----------------
 
+    def _is_participating(self, panel: KeywordPanel) -> bool:
+        """이번 실행에 이 패널의 키워드가 들어갔는가.
+
+        실행 정보가 아직 없으면(창을 열자마자 들어온 이벤트 등) 키워드가
+        입력된 패널은 막지 않는다 — 알려야 할 것을 안 알리는 쪽이 더 나쁘다.
+        """
+        keyword = panel.keyword()
+        if not keyword:
+            return False
+        return keyword in self._participating if self._participating else True
+
     def _panel_for(self, keyword: str) -> KeywordPanel | None:
         for panel in self.panels:
             if panel.keyword() == keyword:
@@ -463,7 +480,10 @@ class MainWindow(QMainWindow):
             if event.outcome not in (LikeOutcome.SUCCESS.value, LikeOutcome.ALREADY_LIKED.value):
                 panel = self._panel_for(event.keyword)
                 if panel:
-                    panel.append_log(f"{event.blog_id}/{event.log_no} → {event.outcome}")
+                    stage = f" ({event.detail})" if event.detail else ""
+                    panel.append_log(
+                        f"{event.blog_id}/{event.log_no} → {event.outcome}{stage}"
+                    )
 
         elif isinstance(event, FallbackUsed):
             # 조용히 잘리는 대신 시끄럽게 알린다 (결함 1 재발 방지).
@@ -471,8 +491,18 @@ class MainWindow(QMainWindow):
                 panel.set_alert(f"폴백 사용: {event.where} — {event.reason}")
 
         elif isinstance(event, Aborted):
+            # 실행은 계정 단위로 하나라(결정 4) 어느 키워드에서 터지든 전부
+            # 멈추는 것은 맞다. 하지만 빨간 배너를 4개 패널 전부에 띄우면
+            # 원인이 어디였는지가 사라지고, 참여하지도 않은 패널까지 중단으로
+            # 보인다. 배너는 원인 패널에만, 나머지 참여 패널은 상태 줄로.
+            origin = self._panel_for(event.keyword) if event.keyword else None
             for panel in self.panels:
-                panel.set_alert(f"중단: {event.reason}")
+                if not self._is_participating(panel):
+                    continue
+                if origin is None or panel is origin:
+                    panel.set_alert(f"중단: {event.reason}")
+                else:
+                    panel.set_status("중단됨 — 다른 키워드에서 실행이 멈췄습니다")
 
         elif isinstance(event, LogLine):
             panel = self._panel_for(event.keyword) or self.panels[0]

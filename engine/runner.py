@@ -28,14 +28,24 @@ from engine.events import (
     WorkerStarted,
 )
 from engine.history import History
-from engine.models import LikeOutcome, Target
+from engine.models import LikeOutcome, LikeResult, Target
 from engine.ratelimit import RateLimiter
 from engine.safety import BlockDetector
 
-LikeFn = Callable[[str, str], Awaitable[LikeOutcome]]
+# 결과는 LikeResult(유형 + 진단 문구)다. 유형만 돌려주는 like_fn도 그대로
+# 받는다 — 테스트와 도구가 "이 블로그는 성공"만 말하면 되는 자리에서 진단
+# 문구까지 지어내게 만들 이유가 없다.
+LikeFn = Callable[[str, str], Awaitable["LikeResult | LikeOutcome"]]
 
 QUEUE_MAXSIZE = 50
 _SENTINEL = object()
+
+
+def as_result(value: LikeResult | LikeOutcome) -> LikeResult:
+    """like_fn이 무엇을 돌려주든 LikeResult로 맞춘다."""
+    if isinstance(value, LikeOutcome):
+        return LikeResult(value)
+    return value
 
 
 def classify_visit_outcome(ok: int, outcomes: list[LikeOutcome]) -> str:
@@ -142,7 +152,7 @@ class Runner:
             # 플래그를 보고 stop_reason을 "error"로 승격한다.
             self._producer_failed = True
             self._emit(LogLine(keyword, f"검색 중 오류: {exc}"))
-            self._emit(Aborted(f"'{keyword}' 검색이 실패했습니다: {exc}"))
+            self._emit(Aborted(f"'{keyword}' 검색이 실패했습니다: {exc}", keyword))
 
     # ---------------- 소비자 ----------------
 
@@ -187,11 +197,14 @@ class Runner:
         ok = tried = 0
         outcomes: list[LikeOutcome] = []
         for log_no in log_nos[: self._config.likes_per_blog]:
-            outcome = await self._attempt_like(target, log_no)
+            result = await self._attempt_like(target, log_no)
+            outcome = result.outcome
             tried += 1
             self._likes_tried += 1
             outcomes.append(outcome)
-            self._emit(LikeResultEvent(target.keyword, target.blog_id, log_no, outcome.value))
+            self._emit(LikeResultEvent(
+                target.keyword, target.blog_id, log_no, outcome.value, result.detail,
+            ))
 
             if outcome is LikeOutcome.SUCCESS:
                 ok += 1
@@ -203,7 +216,8 @@ class Runner:
             if outcome is LikeOutcome.NOT_LOGGED_IN:
                 self._record(target, ok, tried, outcomes)
                 self._stop_reason = "not_logged_in"
-                self._emit(Aborted("세션이 더 이상 로그인 상태가 아닙니다."))
+                self._emit(Aborted("세션이 더 이상 로그인 상태가 아닙니다.",
+                                   target.keyword))
                 return True
 
             reason = self._detector.record(outcome)
@@ -212,13 +226,18 @@ class Runner:
                 self._stop_reason = (
                     "blocked" if outcome is LikeOutcome.BLOCKED else "error"
                 )
-                self._emit(Aborted(reason))
+                # 사유에 마지막 결과의 단계를 함께 싣는다. "5건 연속 실패"만
+                # 남으면 무엇이 실패했는지 알 수 없어 다음 행동이 정해지지
+                # 않는다 (레거시 결함 9).
+                if result.detail:
+                    reason = f"{reason} (마지막: {outcome.value} — {result.detail})"
+                self._emit(Aborted(reason, target.keyword))
                 return True
 
         self._record(target, ok, tried, outcomes)
         return False
 
-    async def _attempt_like(self, target: Target, log_no: str) -> LikeOutcome:
+    async def _attempt_like(self, target: Target, log_no: str) -> LikeResult:
         """공감 글 하나를 시도한다.
 
         I6/스펙 §7.1: TIMEOUT은 딱 한 번 재시도하고, 그래도 실패하면 이
@@ -228,11 +247,11 @@ class Runner:
         느렸던 글 하나가 연속 실패 카운터를 불필요하게 갉아먹지 않는다.
         """
         await self._limiter.acquire()
-        outcome = await self._like(target.blog_id, log_no)
-        if outcome is LikeOutcome.TIMEOUT:
+        result = as_result(await self._like(target.blog_id, log_no))
+        if result.outcome is LikeOutcome.TIMEOUT:
             await self._limiter.acquire()
-            outcome = await self._like(target.blog_id, log_no)
-        return outcome
+            result = as_result(await self._like(target.blog_id, log_no))
+        return result
 
     def _record(
         self, target: Target, ok: int, tried: int, outcomes: list[LikeOutcome]

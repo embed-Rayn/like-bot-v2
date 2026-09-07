@@ -867,3 +867,67 @@ def test_log_folder_button_opens_the_log_directory(window, monkeypatch):
     assert opened[0].toLocalFile().replace("/", "\\").rstrip("\\") == str(
         window.paths.log_dir
     )
+
+
+# ---- 중단 배너는 터진 키워드에만 뜬다 ----
+# 예전에는 Aborted를 무조건 4개 패널 전부로 방송해서, 이번 실행에 참여하지도
+# 않은 빈 패널까지 빨간 "중단"이 뜨고 원인 키워드는 어디에도 남지 않았다.
+
+
+def _arm(window, keywords):
+    for panel, kw in zip(window.panels, keywords):
+        panel.keyword_input.setText(kw)
+    window._participating = {k for k in keywords if k}
+
+
+def test_abort_banner_only_on_the_keyword_that_tripped(window):
+    from engine.events import Aborted
+
+    _arm(window, ["kw1", "kw2", "kw3", "kw4"])
+    window.on_event(Aborted("5건 연속 실패했습니다.", keyword="kw2"))
+
+    assert not window.panels[1].alert_label.isHidden()
+    assert "5건 연속" in window.panels[1].alert_label.text()
+    assert [p.alert_label.text() for p in window.panels if p.keyword() != "kw2"] == ["", "", ""]
+
+
+def test_other_participating_panels_say_they_stopped(window):
+    from engine.events import Aborted
+
+    _arm(window, ["kw1", "kw2", "", ""])
+    window.on_event(Aborted("5건 연속 실패했습니다.", keyword="kw2"))
+
+    assert "중단" in window.panels[0].status_label.text()
+
+
+def test_panels_not_in_the_run_are_left_alone(window):
+    from engine.events import Aborted
+
+    _arm(window, ["kw1", "kw2", "kw3", "kw4"])
+    window._participating = {"kw1", "kw2"}
+    before = window.panels[3].status_label.text()
+    window.on_event(Aborted("5건 연속 실패했습니다.", keyword="kw2"))
+
+    assert window.panels[3].alert_label.text() == ""
+    assert window.panels[3].status_label.text() == before
+
+
+def test_keywordless_abort_still_reaches_every_participating_panel(window):
+    """검색 이전 단계(세션 등)에서 난 중단은 원인 키워드가 없다."""
+    from engine.events import Aborted
+
+    _arm(window, ["kw1", "kw2", "", ""])
+    window.on_event(Aborted("세션이 더 이상 로그인 상태가 아닙니다."))
+
+    assert "중단" in window.panels[0].alert_label.text()
+    assert "중단" in window.panels[1].alert_label.text()
+
+
+def test_like_result_line_shows_the_timeout_stage(window):
+    from engine.events import LikeResultEvent
+
+    _arm(window, ["kw1", "", "", ""])
+    window.on_event(LikeResultEvent(keyword="kw1", blog_id="b1", log_no="9",
+                                    outcome="timeout", detail="클릭 후 on 확인"))
+
+    assert "클릭 후 on 확인" in window.panels[0].log_view.toPlainText()

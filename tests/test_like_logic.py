@@ -82,3 +82,40 @@ def test_fallback_selector_is_not_scoped_to_a_post_number():
 
     assert "area_sympathy" not in LIKE_BUTTON_FALLBACK or "{" not in LIKE_BUTTON_FALLBACK
     assert "u_likeit_button" in LIKE_BUTTON_FALLBACK
+
+
+# ---- 타임아웃 단계 구분 (진단) ----
+# `timeout` 한 값이 페이지 로딩 · 버튼 탐색 · 스크롤 · 클릭 · 클릭 후 확인
+# 다섯 군데에서 똑같이 나오면, 5건 연속 실패로 실행이 멈췄을 때 무엇을
+# 고쳐야 하는지 알 방법이 없다 (레거시 결함 9). 단계 이름을 값에 싣는다.
+
+
+def test_like_result_defaults_to_no_detail():
+    from engine.models import LikeResult
+
+    assert LikeResult(LikeOutcome.SUCCESS).detail == ""
+
+
+def test_stage_detail_names_the_stage_it_came_from():
+    from engine.like import STAGE_CLICK, STAGE_CONFIRM, STAGE_GOTO
+
+    assert len({STAGE_GOTO, STAGE_CLICK, STAGE_CONFIRM}) == 3
+    for stage in (STAGE_GOTO, STAGE_CLICK, STAGE_CONFIRM):
+        assert stage.strip()
+
+
+def test_detail_never_carries_an_exception_message():
+    """예외 메시지에 storage_state가 실린 적이 있다 (보안 규칙). 단계
+    이름과 예외 '유형'까지만 남기고 본문은 절대 싣지 않는다."""
+    from engine.like import stage_detail
+
+    detail = stage_detail("페이지 로딩", RuntimeError("NID_AUT=SECRETCOOKIE"))
+    assert "SECRETCOOKIE" not in detail
+    assert "RuntimeError" in detail
+    assert "페이지 로딩" in detail
+
+
+def test_detail_without_an_exception_is_just_the_stage():
+    from engine.like import stage_detail
+
+    assert stage_detail("클릭 후 on 확인") == "클릭 후 on 확인"
