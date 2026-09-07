@@ -110,3 +110,24 @@ def test_no_button_streak_does_not_affect_consecutive_failure_counter():
     d.record(O.NO_BUTTON)
     d.record(O.NO_BUTTON)
     assert d.record(O.ERROR) is None       # 아직 연속 실패 2건일 뿐
+
+
+def test_default_consecutive_limit_is_the_operator_chosen_1000():
+    """운영자 결정 (2026-09-07): 연속 실패만으로는 사실상 멈추지 않는다.
+    기본값이 조용히 5로 되돌아가면 그 결정이 사라지므로 못 박아 둔다."""
+    # 성공률 창(기본 20)이 먼저 걸리지 않도록 넓혀 두고 연속 상한만 본다.
+    d = BlockDetector(window=2000)
+    for _ in range(999):
+        assert d.record(O.ERROR) is None
+    assert d.record(O.ERROR) is not None      # 1000번째에 비로소 걸린다
+
+
+def test_the_success_rate_window_is_what_actually_stops_a_failing_run():
+    """연속 상한을 1000으로 올려도 성공률 창은 그대로 살아 있다 — 계속
+    실패하는 실행은 20건 남짓에서 멈춘다. 이것이 남은 간접 신호다."""
+    d = BlockDetector()
+    tripped = None
+    for _ in range(20):
+        tripped = d.record(O.ERROR)
+    assert tripped is not None
+    assert "성공률" in tripped

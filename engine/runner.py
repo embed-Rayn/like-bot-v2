@@ -226,7 +226,8 @@ class Runner:
                 self._stop_reason = (
                     "blocked" if outcome is LikeOutcome.BLOCKED else "error"
                 )
-                # 사유에 마지막 결과의 단계를 함께 싣는다. "5건 연속 실패"만
+                # 사유에 마지막 결과의 단계를 함께 싣는다. "연속 실패"나
+                # "성공률" 문구만
                 # 남으면 무엇이 실패했는지 알 수 없어 다음 행동이 정해지지
                 # 않는다 (레거시 결함 9).
                 if result.detail:
