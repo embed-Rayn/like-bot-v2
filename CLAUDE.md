@@ -173,6 +173,19 @@ change fails a test instead of a run.
   still useful for bootstrapping without opening the app.
 - **Login-failure text.** The plain login form always carries a "일회용 번호 로그인" link, so
   that phrase must never be used as a two-factor hint — it makes every failure look like 2FA.
+- **공감 실패는 단계까지 남는다.** `TIMEOUT` 하나가 페이지 로딩 · 버튼 탐색 · 버튼 상태
+  읽기 · 스크롤 · 클릭 · 클릭 후 `on` 확인 여섯 군데에서 나온다. 어디였는지 모르면 대응이
+  정반대다 — 로딩이면 타임아웃 문제이고, 클릭 후 확인이면 네이버가 공감을 받지 않는다는
+  뜻이라 멈추는 것이 맞다. `LikeResult(outcome, detail)`이 단계를 싣고 화면과 실행
+  로그(JSONL)까지 간다. `detail`에 예외 *메시지*는 절대 싣지 않는다 (`stage_detail`) —
+  storage_state가 예외에 실린 적이 있고 이 값은 파일로 남는다.
+  측정 2026-09-07 (비로그인 21건): 클릭 가능 16 · 클릭 타임아웃 0 · NO_BUTTON 5.
+  본문 버튼은 y=7,000~22,000px 아래에 있지만 `scroll_into_view_if_needed` 후 안정되고,
+  폴백 셀렉터는 플로팅 버튼을 잡지 않는다 — 즉 클릭 단계는 용의자가 아니다.
+- **중단은 터진 키워드를 함께 알린다.** `Aborted(reason, keyword)`. 실행은 계정 단위로
+  하나라(결정 4) 어디서 터지든 전부 멈추는 것은 맞지만, 빨간 배너를 4개 패널 전부에
+  띄우면 원인이 어디였는지가 사라지고 참여하지도 않은 빈 패널까지 중단으로 보인다.
+  배너는 원인 패널에만, 나머지 참여 패널은 상태 줄로.
 - **공감 button.** `a.u_likeit_button._face` inside `frame_locator("#mainFrame")`; the `on` /
   `off` class tokens still carry the state. A post renders **two** of them: a floating one
   that trails the scroll and sits permanently just below the fold (never clickable — click()
@@ -194,6 +207,8 @@ blaming the code. Start any real run with 드라이런 (the UI checkbox, or the 
 small live run (방문 상한 3, 블로그당 공감 1) before anything larger.
 
 ## Packaging (Windows exe)
+
+전체 절차와 백신 오탐 대응은 `docs/PACKAGING.md`. 아래는 요약이다.
 
 ```
 python -m pip install -e ".[build]"
