@@ -54,3 +54,20 @@ class LikeOutcome(Enum):
     BLOCKED = "blocked"
     TIMEOUT = "timeout"
     ERROR = "error"
+
+
+@dataclass(frozen=True)
+class LikeResult:
+    """공감 시도 하나의 결과.
+
+    `detail`은 진단 전용이다. `TIMEOUT` 하나가 페이지 로딩 · 버튼 탐색 ·
+    스크롤 · 클릭 · 클릭 후 확인 다섯 군데에서 똑같이 나오면, 5건 연속
+    실패로 실행이 멈췄을 때 무엇을 고쳐야 하는지 알 방법이 없다 (레거시
+    결함 9 — "공감 없음 or 이미 함"). 어느 단계였는지를 값에 실어 화면과
+    실행 로그(JSONL)까지 그대로 흘려보낸다.
+
+    보안 규칙: 여기에 예외 메시지 본문을 담지 않는다. 예외에 storage_state가
+    실린 적이 있고, 이 값은 파일로 기록된다 — `engine.like.stage_detail` 참고.
+    """
+    outcome: LikeOutcome
+    detail: str = ""

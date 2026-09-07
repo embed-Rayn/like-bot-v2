@@ -37,6 +37,7 @@ class LikeResultEvent:
     blog_id: str
     log_no: str
     outcome: str        # LikeOutcome.value
+    detail: str = ""    # 어느 단계에서 났는지 (진단용) — engine.models.LikeResult
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,11 @@ class FallbackUsed:
 @dataclass(frozen=True)
 class Aborted:
     reason: str
+    # 어느 키워드를 처리하다 났는지. 빈 문자열은 키워드 이전 단계(세션 등)에서
+    # 난 전역 중단이라는 뜻이다. 화면은 이 값으로 빨간 배너를 원인 패널에만
+    # 띄운다 — 예전에는 4개 패널 전부에 같은 배너가 떠서, 참여하지 않은
+    # 패널까지 중단으로 보이고 정작 원인 키워드는 어디에도 남지 않았다.
+    keyword: str = ""
 
 
 @dataclass(frozen=True)

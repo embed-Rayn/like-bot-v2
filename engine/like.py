@@ -15,7 +15,7 @@ import time
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-from engine.models import LikeOutcome
+from engine.models import LikeOutcome, LikeResult
 from engine.session import LOGIN_HOST
 
 # 2026-08-31 실측. 클래스가 u_likeit_list_btn → u_likeit_button _face 로 바뀌었고,
@@ -44,6 +44,31 @@ BUTTON_TIMEOUT_MS = 6_000
 # 오판된다. 그래서 클릭 후에는 상태가 바뀔 때까지 짧게 폴링한다.
 LIKE_VERIFY_TIMEOUT_MS = 4_000
 LIKE_VERIFY_POLL_INTERVAL_S = 0.2
+
+# 같은 TIMEOUT이라도 어디서 났느냐에 따라 대응이 정반대다 — 페이지 로딩이면
+# 타임아웃을 늘리는 문제이고, 클릭 후 확인이면 네이버가 공감을 받지 않는다는
+# 뜻이라 오히려 멈추는 게 맞다. 5건 연속 실패로 실행이 멈췄을 때 이 값이
+# 없으면 무엇을 고쳐야 하는지 알 수 없다 (레거시 결함 9).
+STAGE_GOTO = "페이지 로딩"
+STAGE_FIND = "버튼 탐색"
+STAGE_STATE = "버튼 상태 읽기"
+STAGE_SCROLL = "버튼까지 스크롤"
+STAGE_CLICK = "클릭"
+STAGE_CONFIRM = "클릭 후 on 확인"
+# 글 번호로 좁힌 셀렉터가 빗나가 폴백으로 잡았다는 표시. 네이버가 글 페이지
+# 구조를 바꾸기 시작하는 초기 징후라 실패와 함께 보여야 의미가 있다.
+FALLBACK_MARK = "폴백 셀렉터"
+
+
+def stage_detail(stage: str, exc: BaseException | None = None) -> str:
+    """진단 문구를 만든다 — 단계 이름과, 있으면 예외의 *유형*까지만.
+
+    예외 메시지 본문은 절대 싣지 않는다. storage_state가 예외 메시지에 실린
+    적이 있고(보안 규칙), 이 값은 화면과 실행 로그 파일에 그대로 남는다.
+    """
+    if exc is None:
+        return stage
+    return f"{stage} ({type(exc).__name__})"
 
 
 def post_url(blog_id: str, log_no: str) -> str:
@@ -78,7 +103,7 @@ def is_confirmed_liked(class_attr: str | None) -> bool:
 
 async def press_like(
     page: Page, blog_id: str, log_no: str, *, dry_run: bool = False
-) -> LikeOutcome:
+) -> LikeResult:
     """dry_run=True일 때의 SUCCESS는 '눌렀다'가 아니라 '버튼을 찾았고 누를 수
     있었다'는 뜻이다 — 실제로 클릭하지 않으므로 진짜 공감과는 구분해서 읽어야
     한다. 호출자가 dry_run을 넘겼으므로 그 사실은 이미 알고 있다.
@@ -90,55 +115,88 @@ async def press_like(
             timeout=GOTO_TIMEOUT_MS,
         )
     except PlaywrightTimeout:
-        return LikeOutcome.TIMEOUT
-    except PlaywrightError:
+        return LikeResult(LikeOutcome.TIMEOUT, stage_detail(STAGE_GOTO))
+    except PlaywrightError as exc:
         # DNS 실패, 연결 리셋, 페이지 크래시 등. 이 예외를 흘려보내면 실행
         # 전체가 죽는다 — 수백 개 블로그를 몇 시간 도는 동안 일시적 네트워크
         # 오류는 사실상 확실히 일어난다.
-        return LikeOutcome.ERROR
+        return LikeResult(LikeOutcome.ERROR, stage_detail(STAGE_GOTO, exc))
 
     if LOGIN_HOST in page.url:
-        return LikeOutcome.NOT_LOGGED_IN
+        return LikeResult(LikeOutcome.NOT_LOGGED_IN)
 
     frame = page.frame_locator(FRAME)
     button = None
-    for selector in (like_button_selector(log_no), LIKE_BUTTON_FALLBACK):
+    used_fallback = False
+    for index, selector in enumerate((like_button_selector(log_no), LIKE_BUTTON_FALLBACK)):
         candidate = frame.locator(selector).first
         try:
             await candidate.wait_for(state="attached", timeout=BUTTON_TIMEOUT_MS)
         except PlaywrightTimeout:
             continue    # 스킨에 따라 id가 없을 수 있다 — 다음 셀렉터로
-        except PlaywrightError:
-            return LikeOutcome.ERROR
+        except PlaywrightError as exc:
+            return LikeResult(LikeOutcome.ERROR, stage_detail(STAGE_FIND, exc))
         button = candidate
+        used_fallback = index == 1
         break
     if button is None:
-        return LikeOutcome.NO_BUTTON
+        return LikeResult(LikeOutcome.NO_BUTTON, stage_detail(STAGE_FIND))
+
+    def detail(stage: str, exc: BaseException | None = None) -> str:
+        text = stage_detail(stage, exc)
+        return f"{text} · {FALLBACK_MARK}" if used_fallback else text
+
+    def ok_detail() -> str:
+        """성공한 시도에는 단계 이름을 남기지 않는다 — 진단할 것이 없는데
+        모든 성공 줄에 문구가 붙으면 정작 실패 줄이 묻힌다. 폴백을 썼다는
+        사실만은 성공이어도 남긴다 (구조 변화의 초기 징후다)."""
+        return FALLBACK_MARK if used_fallback else ""
 
     try:
         state = classify_button_state(await button.get_attribute("class"))
-        if state is not None:
-            return state          # ALREADY_LIKED 또는 ERROR
-
-        if dry_run:
-            # 드라이런: 버튼을 찾는 데까지만. 클릭하지 않는다.
-            return LikeOutcome.SUCCESS
-
-        # 본문 안 버튼은 글 아래쪽에 있어 처음에는 화면 밖이다. 스크롤하지
-        # 않고 클릭하면 "element is outside of the viewport"로 타임아웃난다.
-        await button.scroll_into_view_if_needed(timeout=BUTTON_TIMEOUT_MS)
-        await button.click(timeout=BUTTON_TIMEOUT_MS)
-
-        # 클릭이 실제로 반영됐는지 확인한다 — AJAX 응답을 기다리는
-        # 유일한 지점이다. 확인 없는 클릭은 거짓 성공을 만들고, 그러면
-        # 차단 감지가 무력해진다.
-        if await _wait_for_like_confirmation(button):
-            return LikeOutcome.SUCCESS
-        return LikeOutcome.TIMEOUT
     except PlaywrightTimeout:
-        return LikeOutcome.TIMEOUT
-    except PlaywrightError:
-        return LikeOutcome.ERROR
+        return LikeResult(LikeOutcome.TIMEOUT, detail(STAGE_STATE))
+    except PlaywrightError as exc:
+        return LikeResult(LikeOutcome.ERROR, detail(STAGE_STATE, exc))
+    if state is LikeOutcome.ALREADY_LIKED:
+        return LikeResult(state, ok_detail())
+    if state is not None:
+        # class에 on도 off도 없다 — 버튼 구조가 바뀌었다는 뜻이라 단계를 남긴다.
+        return LikeResult(state, detail(STAGE_STATE))
+
+    if dry_run:
+        # 드라이런: 버튼을 찾는 데까지만. 클릭하지 않는다.
+        return LikeResult(LikeOutcome.SUCCESS, ok_detail())
+
+    # 본문 안 버튼은 글 아래쪽에 있어 처음에는 화면 밖이다. 스크롤하지
+    # 않고 클릭하면 "element is outside of the viewport"로 타임아웃난다.
+    try:
+        await button.scroll_into_view_if_needed(timeout=BUTTON_TIMEOUT_MS)
+    except PlaywrightTimeout:
+        return LikeResult(LikeOutcome.TIMEOUT, detail(STAGE_SCROLL))
+    except PlaywrightError as exc:
+        return LikeResult(LikeOutcome.ERROR, detail(STAGE_SCROLL, exc))
+
+    try:
+        await button.click(timeout=BUTTON_TIMEOUT_MS)
+    except PlaywrightTimeout:
+        return LikeResult(LikeOutcome.TIMEOUT, detail(STAGE_CLICK))
+    except PlaywrightError as exc:
+        return LikeResult(LikeOutcome.ERROR, detail(STAGE_CLICK, exc))
+
+    # 클릭이 실제로 반영됐는지 확인한다 — AJAX 응답을 기다리는 유일한
+    # 지점이다. 확인 없는 클릭은 거짓 성공을 만들고, 그러면 차단 감지가
+    # 무력해진다. 여기서 나는 TIMEOUT은 "눌렀는데 네이버가 반영하지 않았다"는
+    # 뜻이라 로딩이 느린 것과는 대응이 정반대다 — 그래서 단계를 남긴다.
+    try:
+        confirmed = await _wait_for_like_confirmation(button)
+    except PlaywrightTimeout:
+        return LikeResult(LikeOutcome.TIMEOUT, detail(STAGE_CONFIRM))
+    except PlaywrightError as exc:
+        return LikeResult(LikeOutcome.ERROR, detail(STAGE_CONFIRM, exc))
+    if confirmed:
+        return LikeResult(LikeOutcome.SUCCESS, ok_detail())
+    return LikeResult(LikeOutcome.TIMEOUT, detail(STAGE_CONFIRM))
 
 
 async def _wait_for_like_confirmation(

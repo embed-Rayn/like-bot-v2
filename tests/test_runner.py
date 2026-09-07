@@ -572,3 +572,109 @@ async def test_search_failure_for_every_keyword_is_reported_as_error(tmp_path):
 
     assert summary.stop_reason == "error"
     assert summary.blogs_done == 0
+
+
+# ---- 중단 사유는 어느 키워드에서 났는지 함께 알린다 ----
+# 화면이 4개 패널 전부에 같은 빨간 배너를 띄우면, 참여하지 않은 패널까지
+# 중단으로 보이고 정작 원인이 된 키워드는 어디에도 남지 않는다.
+
+
+async def test_abort_names_the_keyword_it_came_from(tmp_path):
+    from engine.events import Aborted
+
+    events = []
+    search = FakeSearch({"kw2": [["b1"]]})
+    config = _config(tmp_path, keywords=["kw1", "kw2"])
+    runner, history = _runner(tmp_path, config, search,
+                              await _always(LikeOutcome.BLOCKED), events)
+    await runner.run()
+    history.close()
+
+    aborts = [e for e in events if isinstance(e, Aborted)]
+    assert [a.keyword for a in aborts] == ["kw2"]
+
+
+async def test_session_loss_abort_also_names_the_keyword(tmp_path):
+    from engine.events import Aborted
+
+    events = []
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path), search,
+                              await _always(LikeOutcome.NOT_LOGGED_IN), events)
+    await runner.run()
+    history.close()
+
+    assert [e.keyword for e in events if isinstance(e, Aborted)] == ["kw1"]
+
+
+async def test_search_failure_abort_keeps_its_keyword(tmp_path):
+    from engine.events import Aborted
+
+    class BoomSearch:
+        async def iter_pages(self, query, start_date, end_date, first_page=1):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover
+
+    events = []
+    runner, history = _runner(tmp_path, _config(tmp_path), BoomSearch(),
+                              await _always(LikeOutcome.SUCCESS), events)
+    await runner.run()
+    history.close()
+
+    assert [e.keyword for e in events if isinstance(e, Aborted)] == ["kw1"]
+
+
+# ---- 타임아웃 단계는 이벤트를 타고 화면 · 실행 로그까지 간다 ----
+
+async def test_like_result_event_carries_the_detail(tmp_path):
+    from engine.events import LikeResultEvent
+    from engine.models import LikeResult
+
+    async def like_fn(blog_id, log_no):
+        return LikeResult(LikeOutcome.TIMEOUT, "클릭 후 on 확인")
+
+    events = []
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, likes_per_blog=1), search,
+                              like_fn, events)
+    await runner.run()
+    history.close()
+
+    like_events = [e for e in events if isinstance(e, LikeResultEvent)]
+    assert [e.detail for e in like_events] == ["클릭 후 on 확인"]
+
+
+async def test_plain_outcomes_still_work_and_carry_no_detail(tmp_path):
+    """like_fn이 LikeOutcome만 돌려줘도 러너는 그대로 동작한다."""
+    from engine.events import LikeResultEvent
+
+    events = []
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, likes_per_blog=1), search,
+                              await _always(LikeOutcome.SUCCESS), events)
+    summary = await runner.run()
+    history.close()
+
+    assert summary.likes_ok == 1
+    assert [e.detail for e in events if isinstance(e, LikeResultEvent)] == [""]
+
+
+async def test_retry_reports_the_detail_of_the_final_attempt(tmp_path):
+    from engine.events import LikeResultEvent
+    from engine.models import LikeResult
+
+    calls = {"n": 0}
+
+    async def like_fn(blog_id, log_no):
+        calls["n"] += 1
+        return LikeResult(LikeOutcome.TIMEOUT,
+                          "페이지 로딩" if calls["n"] == 1 else "클릭 후 on 확인")
+
+    events = []
+    search = FakeSearch({"kw1": [["b1"]]})
+    runner, history = _runner(tmp_path, _config(tmp_path, likes_per_blog=1), search,
+                              like_fn, events)
+    await runner.run()
+    history.close()
+
+    assert [e.detail for e in events if isinstance(e, LikeResultEvent)] == ["클릭 후 on 확인"]

@@ -60,7 +60,8 @@ async def main_async(account: str, keyword: str, blogs: int) -> None:
     try:
         for blog_id, log_nos in plans:
             await limiter.acquire()
-            outcome = await press_like(session.page, blog_id, log_nos[0], dry_run=True)
+            result = await press_like(session.page, blog_id, log_nos[0], dry_run=True)
+            outcome = result.outcome
             mark = "찾음" if outcome is LikeOutcome.SUCCESS else outcome.value
             print(f"  {blog_id:24s} {log_nos[0]:>14s}  {mark}")
     finally:
