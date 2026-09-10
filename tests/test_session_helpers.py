@@ -309,3 +309,79 @@ async def test_login_without_a_password_skips_autofill_and_waits(monkeypatch):
     assert session.page.typed == [], (
         f"비밀번호 없이도 폼에 입력했습니다: {session.page.typed!r}"
     )
+
+
+# ---- 로그인 판정은 서버에 묻는다 (2026-09-10) ----
+# 저장된 세션을 매번 컨텍스트에 다시 실어 주므로 NID_AUT는 네이버가 세션을
+# 만료시킨 뒤에도 로컬에 그대로 남는다. 쿠키 '존재'만 보는 검사는 구조적으로
+# 만료를 탐지할 수 없다. 실제로 그 상태로 실행이 끝까지 돌았고(공감 21건
+# 전부 401), 더 나쁘게는 앱도 tools/login.py도 "이미 로그인되어 있습니다"라며
+# 재로그인 기회를 주지 않아 복구 자체가 막혔다.
+
+
+class _FakeCookieContext:
+    def __init__(self, names: list[str]) -> None:
+        self._names = names
+        self.cleared = False
+
+    async def cookies(self) -> list[dict]:
+        return [{"name": n} for n in self._names]
+
+    async def clear_cookies(self) -> None:
+        self.cleared = True
+        self._names = []
+
+
+class _FakeNavPage:
+    """goto한 곳에 그대로 머무는 페이지 — 리다이렉트가 없다 = 로그아웃."""
+
+    def __init__(self, lands_on: str | None = None) -> None:
+        self.url = "about:blank"
+        self._lands_on = lands_on
+        self.visited: list[str] = []
+
+    async def goto(self, url: str, **_kw) -> None:
+        self.visited.append(url)
+        self.url = self._lands_on or url
+
+
+async def test_stale_cookie_alone_is_not_accepted_as_logged_in():
+    """만료된 세션은 쿠키가 남아 있어도 로그아웃으로 판정돼야 한다."""
+    session = BrowserSession(AppPaths.for_app())
+    session._context = _FakeCookieContext(["NID_AUT", "NID_SES"])
+    session.page = _FakeNavPage()   # 로그인 호스트에 그대로 머문다
+
+    assert await session._is_logged_in() is False
+
+
+async def test_a_live_session_is_recognised_by_the_redirect_away():
+    """세션이 살아 있으면 네이버가 로그인 페이지에서 우리를 돌려보낸다."""
+    session = BrowserSession(AppPaths.for_app())
+    session._context = _FakeCookieContext(["NID_AUT", "NID_SES"])
+    session.page = _FakeNavPage(lands_on="https://www.naver.com/")
+
+    assert await session._is_logged_in() is True
+
+
+async def test_no_cookie_at_all_skips_the_login_page_entirely():
+    """쿠키가 아예 없으면 볼 것도 없이 로그아웃이다 — 로그인 페이지는
+    가장 방어가 심한 화면이라(결정 3) 갈 이유가 없으면 가지 않는다."""
+    session = BrowserSession(AppPaths.for_app())
+    session._context = _FakeCookieContext([])
+    session.page = _FakeNavPage()
+
+    assert await session._is_logged_in() is False
+    assert session.page.visited == []
+
+
+async def test_stale_cookies_are_discarded_before_a_fresh_login():
+    """낡은 NID_AUT를 남겨 두면 wait_for_manual_login이 그것을 보고 곧바로
+    '로그인 완료'로 판정한다 — 사람이 아무것도 하지 않았는데도."""
+    session = BrowserSession(AppPaths.for_app())
+    context = _FakeCookieContext(["NID_AUT", "NID_SES"])
+    session._context = context
+
+    await session._discard_stale_session()
+
+    assert context.cleared is True
+    assert await session._has_auth_cookie() is False

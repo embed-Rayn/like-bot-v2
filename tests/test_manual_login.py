@@ -28,6 +28,11 @@ class _FakeContext:
             return [{"name": "NID_AUT", "value": "x"}]
         return [{"name": "NNB", "value": "y"}]
 
+    async def clear_cookies(self) -> None:
+        """낡은 세션을 버리는 자리. 카운터는 건드리지 않는다 — 이 페이크는
+        '몇 번째 조회에서 쿠키가 생기는가'로 사람의 로그인을 흉내 낸다."""
+        self.cleared = True
+
 
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):

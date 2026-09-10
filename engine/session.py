@@ -172,6 +172,7 @@ class BrowserSession:
             await self._start(state_file, headless=headless)
 
             if not await self._is_logged_in():
+                await self._discard_stale_session()
                 await self._login(
                     account, password_supplier(), on_challenge=on_challenge
                 )
@@ -239,6 +240,9 @@ class BrowserSession:
                 say("이미 로그인되어 있습니다. 세션을 갱신했습니다.")
                 return True
 
+            # 낡은 쿠키를 남겨 두면 wait_for_manual_login()이 그것을 보고
+            # 사람이 손대기도 전에 "완료"로 판정한다.
+            await self._discard_stale_session()
             await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
             say("열린 창에서 직접 로그인해 주세요. 완료를 기다립니다.")
 
@@ -255,13 +259,44 @@ class BrowserSession:
         finally:
             await self.close()
 
-    async def _is_logged_in(self) -> bool:
-        """실제로 로그인 상태인지 확인한다. 쿠키 존재만으로는 부족하다."""
-        await self.page.goto("https://blog.naver.com/", wait_until="domcontentloaded")
-        if LOGIN_HOST in self.page.url:
-            return False
+    async def _has_auth_cookie(self) -> bool:
+        """로그인 쿠키가 컨텍스트에 들어 있는가. **로그인 여부가 아니다.**"""
         cookies = await self._context.cookies()
         return any(c["name"] == "NID_AUT" for c in cookies)
+
+    async def _discard_stale_session(self) -> None:
+        """로그아웃으로 판정된 뒤 남아 있는 쿠키를 버린다.
+
+        저장된 세션은 우리가 컨텍스트에 실어 준 것이라, 만료된 뒤에도 그대로
+        남는다. 그걸 남겨 두면 wait_for_manual_login()이 그 NID_AUT를 보고
+        사람이 아무것도 하지 않았는데 "로그인 완료"로 판정한다. 새 로그인을
+        시작하기 전에 깨끗이 지운다.
+        """
+        await self._context.clear_cookies()
+
+    async def _is_logged_in(self) -> bool:
+        """실제로 로그인 상태인지 **네이버에게** 묻는다.
+
+        쿠키 존재는 답이 될 수 없다. 저장된 세션을 매번 컨텍스트에 다시 실어
+        주므로 NID_AUT는 네이버가 세션을 만료시킨 뒤에도 로컬에 남는다 — 즉
+        "쿠키가 있는가"는 구조적으로 만료를 탐지할 수 없다. 2026-09-10에
+        실제로 그 상태로 실행이 끝까지 돌았고(공감 21건 전부 401 거부), 더
+        나쁘게는 앱도 tools/login.py도 "이미 로그인되어 있습니다"라고 답해
+        재로그인 자체가 막혔다. 레거시 결함 3이 다른 얼굴로 돌아온 것이다.
+
+        판정은 두 단계다:
+          1. 쿠키가 아예 없으면 볼 것도 없이 로그아웃이다. 로그인 페이지는
+             가장 방어가 심한 화면이므로(결정 3) 갈 이유가 없으면 가지 않는다.
+          2. 있으면 로그인 페이지를 열어 본다. 세션이 살아 있으면 네이버가
+             우리를 url 파라미터(www.naver.com)로 돌려보낸다. 이것은
+             _login()이 로그인 성공을 판정할 때 쓰는 것과 **같은 신호**다 —
+             새 신호를 지어내지 않는다. 폼을 건드리지도, 아무것도 입력하지도
+             않는다.
+        """
+        if not await self._has_auth_cookie():
+            return False
+        await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        return LOGIN_HOST not in self.page.url
 
     async def _login(
         self,
