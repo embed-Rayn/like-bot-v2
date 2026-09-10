@@ -191,12 +191,51 @@ change fails a test instead of a run.
   하나라(결정 4) 어디서 터지든 전부 멈추는 것은 맞지만, 빨간 배너를 4개 패널 전부에
   띄우면 원인이 어디였는지가 사라지고 참여하지도 않은 빈 패널까지 중단으로 보인다.
   배너는 원인 패널에만, 나머지 참여 패널은 상태 줄로.
-- **공감 button.** `a.u_likeit_button._face` inside `frame_locator("#mainFrame")`; the `on` /
-  `off` class tokens still carry the state. A post renders **two** of them: a floating one
-  that trails the scroll and sits permanently just below the fold (never clickable — click()
-  times out with "element is outside of the viewport"), and the in-post one under
-  `#area_sympathy{logNo}`. Always scope to the post number, and
-  `scroll_into_view_if_needed()` before clicking.
+- **공감 button.** `a.u_likeit_button._face` inside `frame_locator("#mainFrame")`. A post
+  renders **two** of them: a floating one that trails the scroll and sits permanently just
+  below the fold (never clickable — click() times out with "element is outside of the
+  viewport"), and the in-post one under `#area_sympathy{logNo}`. Always scope to the post
+  number, and `scroll_into_view_if_needed()` before clicking.
+
+- **공감 위젯은 지연 초기화된다 — 상태를 읽기 전에 반드시 기다릴 것 (실측 2026-09-10).**
+  정적 마크업에는 언제나 `off` · `aria-pressed="false"` · 카운트 0인 **껍데기**가 들어
+  있다. 스크롤해서 화면에 들어온 뒤에야 스크립트가 붙어 `.u_likeit_list_module`에
+  `data-loaded="1"`이 생기고 서버의 진짜 상태가 채워진다 (스크롤 후 약 1.5초). 그전에
+  읽으면 이미 공감한 글도 "안 눌림"으로 보이고, 그전에 클릭하면 `onclick="return false"`인
+  맨 `<a>`를 누르는 셈이라 아무 일도 일어나지 않는다.
+
+- **`on`/`off` class 토큰은 상태가 아니다 — `aria-pressed`를 읽을 것.** 이 버튼은
+  `aria-haspopup="true"`인 리액션 레이어(`ul.u_likeit_layer._faceLayer`) 열기 버튼이라,
+  레이어가 열리거나 아이콘 애니메이션이 도는 동안에도 class에 `on`이 붙는다. 2026-09-10
+  실행(run-20260910-195029)에서 **거부된 공감 21건이 전부 그 `on`을 보고 SUCCESS로
+  기록됐다.** 실제로는 0건이 눌렸다.
+
+- **공감 성공 판정의 권위는 API 응답에 있다.** 클릭은 이 요청을 만든다:
+  `https://apis.naver.com/blogserver/like/v1/services/BLOG/contents/{blogId}_{logNo}?suppress_response_codes=true&_method=POST&pool=blogid&callback=…`
+  `suppress_response_codes=true` 때문에 **HTTP 상태는 실패해도 200**이고, 진짜 결과는
+  JSONP 본문의 `statusCode`다. 로그아웃 상태의 답:
+  `{"statusCode":401,"errorCode":4010,"message":"로그인 하신 후 이용해 주시기 바랍니다."}`
+  `engine/like.py`가 클릭 전에 응답을 붙잡아 401 → `NOT_LOGGED_IN`, 403/429 → `BLOCKED`으로
+  옮긴다. 성공 응답의 형태는 **일부러 가정하지 않는다** — 거부가 없으면 그때 DOM
+  (`aria-pressed="true"`)으로 확인한다. 성공까지 본문 모양으로 판정하려 들면 그 추측이
+  빗나가는 날 다시 거짓 성공이 된다.
+  참고: `_face` 클릭 하나로 공감 POST가 나간다. 레이어의 항목을 따로 누를 필요는 없다.
+
+- **로그인 판정은 네이버에게 묻는다 (2026-09-10 수정).** 예전 `_is_logged_in()`은
+  `NID_AUT` 쿠키가 있으면 로그인으로 봤다. 그런데 그 쿠키는 **우리가 저장된 세션에서
+  매번 다시 주입하는 값**이라, 네이버가 서버에서 세션을 만료시켜도 로컬에는 그대로
+  남는다 — 이 검사는 구조적으로 만료를 탐지할 수 없었다. 결과는 두 겹의 사고였다:
+  로그아웃 상태로 실행이 끝까지 돌았고(공감 21건 전부 401), 앱도 `tools/login.py`도
+  "이미 로그인되어 있습니다"라고 답해 **재로그인 자체가 막혔다**. 레거시 결함 3이
+  다른 얼굴로 돌아온 것이다. 지금은:
+  1. 쿠키가 아예 없으면 로그인 페이지를 볼 것도 없이 로그아웃. 그 페이지는 가장
+     방어가 심한 화면이므로(결정 3) 갈 이유가 없으면 가지 않는다.
+  2. 있으면 로그인 페이지를 열어 본다 — 세션이 살아 있으면 네이버가 `url`
+     파라미터로 우리를 돌려보낸다. `_login()`이 로그인 성공을 판정할 때 쓰는 것과
+     **같은 신호**다. 폼은 건드리지 않는다.
+  3. 로그아웃으로 판정되면 `_discard_stale_session()`이 쿠키를 비운다. 남겨 두면
+     `wait_for_manual_login()`이 그 낡은 NID_AUT를 보고 사람이 손대기도 전에
+     "완료"로 판정한다.
 
 ## Testing
 
@@ -219,6 +258,13 @@ small live run (방문 상한 3, 블로그당 공감 1) before anything larger.
 python -m pip install -e ".[build]"
 python -m PyInstaller --noconfirm packaging/like-bot-v2.spec
 ```
+
+**버전은 `engine/version.py`의 `__version__` 한 줄에서만 온다** — 창 제목, exe 속성창의
+FileVersion/ProductVersion(스펙이 `VSVersionInfo`로 박는다), `pyproject.toml`의 dynamic
+version이 전부 그 값을 읽는다. 배포본은 폴더째 압축돼 돌아다니고 압축 파일 이름은 쉽게
+바뀌므로, 받는 사람이 버전을 확인할 수 있는 곳은 사실상 창 제목과 파일 속성뿐이다.
+압축 파일 이름에만 버전을 붙이고(`like-bot-v2-2.0.1.zip`) 폴더·exe 이름은 그대로 둔다 —
+백신 제외 경로와 바로가기가 버전마다 깨지면 안 된다.
 
 Output is `dist/like-bot-v2/` (약 645MB, zip 280MB) — **onedir, not onefile**. Zip the
 folder to distribute it. onefile would unpack the playwright driver, the Qt plugins and
