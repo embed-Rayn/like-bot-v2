@@ -58,6 +58,7 @@ from engine.runner import Runner
 from engine.safety import BlockDetector
 from engine.search import SearchClient
 from engine.session import BrowserSession
+from engine.version import __version__
 
 KEYRING_SERVICE = "like-bot-v2"
 PANEL_COUNT = 4
@@ -82,7 +83,7 @@ def format_stop_reason(reason: str) -> str:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("blog search & like")
+        self.setWindowTitle(f"blog search & like v{__version__}")
         self.resize(1280, 860)
 
         self.paths = AppPaths.for_app()
@@ -298,7 +299,17 @@ class MainWindow(QMainWindow):
         self._participating = set(running)
         for panel in self.panels:
             panel.set_alert("")
-            panel.set_running(True, participating=panel.keyword() in running)
+            participating = panel.keyword() in running
+            panel.set_running(True, participating=participating)
+            if participating:
+                # 지난 실행이 남긴 "중단됨" 같은 문구를 물려받지 않는다.
+                panel.set_status("대기 중")
+            elif panel.keyword():
+                # 패널 ▶는 "이 키워드 하나로만 실행"이다(결정 4). 그런데
+                # 빠진 패널의 상태 줄이 "대기 중" 그대로면 고장난 것과
+                # 구분되지 않는다 — 키워드 2를 적어 두고 키워드 1의 ▶를
+                # 누른 운영자에게는 "2번이 안 되는" 것으로 보인다.
+                panel.set_status("이번 실행에 없음 — 함께 돌리려면 상단 ▶ 전체 실행")
         self.run_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.stop_button.setStyleSheet(STOP_RUNNING_STYLE)
@@ -441,10 +452,35 @@ class MainWindow(QMainWindow):
         return keyword in self._participating if self._participating else True
 
     def _panel_for(self, keyword: str) -> KeywordPanel | None:
+        """키워드를 맡은 패널. 없으면 None.
+
+        빈 키워드는 **어느 패널도 가리키지 않는다.** 키워드 칸이 비어 있는
+        패널의 keyword()도 똑같이 ""라서, 이 방어가 없으면 전역 이벤트
+        (LogLine.keyword="")가 "키워드가 비어 있는 첫 패널"을 원인 패널로
+        골라 버린다. 실측 2026-09-10 (run-20260910-195029): 키워드 1로만
+        실행했는데 로그인 안내가 3번 패널에 떴다.
+        """
+        if not keyword:
+            return None
         for panel in self.panels:
             if panel.keyword() == keyword:
                 return panel
         return None
+
+    def _log_targets(self, keyword: str) -> list[KeywordPanel]:
+        """이 로그 줄을 받아야 할 패널들.
+
+        키워드가 있으면 그 패널 하나. 비어 있으면 전역 메시지이므로 이번
+        실행에 **참여한** 패널 전부다 — 로그인 안내는 지금 도는 실행에 관한
+        말이지, 옆에 놓인 빈 패널에 관한 말이 아니다. 실행 정보가 아직
+        없으면(창을 열자마자 들어온 브라우저 내려받기 진행 등) 1번 패널로
+        보낸다. 알려야 할 것을 아무 데도 안 알리는 쪽이 더 나쁘다.
+        """
+        if keyword:
+            panel = self._panel_for(keyword)
+            return [panel] if panel else []
+        participating = [p for p in self.panels if self._is_participating(p)]
+        return participating or [self.panels[0]]
 
     def on_event(self, event) -> None:
         if isinstance(event, WorkerStarted):
@@ -505,8 +541,8 @@ class MainWindow(QMainWindow):
                     panel.set_status("중단됨 — 다른 키워드에서 실행이 멈췄습니다")
 
         elif isinstance(event, LogLine):
-            panel = self._panel_for(event.keyword) or self.panels[0]
-            panel.append_log(event.text)
+            for panel in self._log_targets(event.keyword):
+                panel.append_log(event.text)
             # 키워드가 빈 로그는 전역 메시지다(로그인 안내 등). 패널 로그에만
             # 넣으면 묻힌다 — 지금 무엇을 해야 하는지 알려야 하는 문구다.
             if not event.keyword:
