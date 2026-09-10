@@ -931,3 +931,70 @@ def test_like_result_line_shows_the_timeout_stage(window):
                                     outcome="timeout", detail="클릭 후 on 확인"))
 
     assert "클릭 후 on 확인" in window.panels[0].log_view.toPlainText()
+
+
+# ---- 전역 로그(로그인 안내 등)는 빈 패널로 새지 않는다 ----
+# 실측 2026-09-10 (run-20260910-195029): 키워드 1로만 실행했는데 "브라우저
+# 창에서 로그인을 완료해 주세요"가 3번 패널에 떴다. LogLine.keyword=""와
+# 빈 키워드 칸의 keyword()가 똑같이 ""라서, _panel_for("")가 "키워드가 비어
+# 있는 첫 패널"을 원인 패널로 골라 버린 것이다.
+
+
+def test_panel_lookup_never_matches_an_empty_keyword_box(window):
+    _arm(window, ["kw1", "kw2", "", ""])
+
+    assert window._panel_for("") is None
+
+
+def test_global_log_line_does_not_land_in_an_empty_panel(window):
+    from engine.events import LogLine
+
+    _arm(window, ["kw1", "", "", ""])
+    window.on_event(LogLine("", "브라우저 창에서 로그인을 완료해 주세요."))
+
+    assert "로그인을 완료" in window.panels[0].log_view.toPlainText()
+    assert window.panels[2].log_view.toPlainText() == ""
+
+
+def test_global_log_line_reaches_every_participating_panel(window):
+    from engine.events import LogLine
+
+    _arm(window, ["kw1", "kw2", "kw3", "kw4"])
+    window._participating = {"kw1", "kw2"}
+    window.on_event(LogLine("", "브라우저 창에서 로그인을 완료해 주세요."))
+
+    assert "로그인을 완료" in window.panels[0].log_view.toPlainText()
+    assert "로그인을 완료" in window.panels[1].log_view.toPlainText()
+    assert window.panels[2].log_view.toPlainText() == ""
+    assert window.panels[3].log_view.toPlainText() == ""
+
+
+def test_global_log_line_falls_back_to_the_first_panel_before_a_run(window):
+    """실행 정보가 아직 없으면(창을 열자마자) 알릴 곳은 1번 패널뿐이다."""
+    from engine.events import LogLine
+
+    window.on_event(LogLine("", "브라우저를 내려받는 중입니다."))
+
+    assert "내려받는 중" in window.panels[0].log_view.toPlainText()
+
+
+# ---- 이번 실행에 없는 패널은 그렇다고 말한다 ----
+# 패널 ▶는 "이 키워드 하나로만 실행"이다(결정 4). 그런데 참여하지 않은
+# 패널은 상태 줄이 "대기 중" 그대로여서 고장난 것과 구분되지 않았다.
+
+
+def test_panel_left_out_of_the_run_says_so(started):
+    window, _ = started
+
+    window.panels[0].start_button.click()
+
+    assert "이번 실행" in window.panels[1].status_label.text()
+    assert window.panels[1].status_label.text() != "대기 중"
+
+
+def test_panel_in_the_run_is_not_marked_as_left_out(started):
+    window, _ = started
+
+    window.panels[0].start_button.click()
+
+    assert "이번 실행" not in window.panels[0].status_label.text()

@@ -32,6 +32,43 @@ python -m PyInstaller --noconfirm packaging/like-bot-v2.spec
   `storage_state.json`, `data/`는 절대 빌드에도 저장소에도 들어가면 안 된다
   (보안 규칙).
 
+## 1.5. 버전은 `engine/version.py` 한 곳에서 온다
+
+```python
+__version__ = "2.0.1"
+```
+
+이 한 줄을 고치면 세 곳이 같이 따라온다.
+
+| 어디 | 어떻게 |
+| --- | --- |
+| 창 제목 | `blog search & like v2.0.1` (`desktop/app.py`) |
+| exe 속성창 → 자세히 | 스펙의 `_version()`이 읽어 `VSVersionInfo`로 박는다 |
+| `pyproject.toml` | `[tool.setuptools.dynamic]`의 `attr = "engine.version.__version__"` |
+
+exe 속성에까지 넣는 이유는, 배포본이 **폴더째 압축되어** 돌아다니고 압축 파일
+이름은 받는 사람이 쉽게 바꾸기 때문이다. "지금 쓰는 게 몇 번이냐"를 확인할 수
+있는 곳이 사실상 창 제목과 파일 속성 둘뿐이다. 확인:
+
+```powershell
+(Get-Item dist\like-bot-v2\like-bot-v2.exe).VersionInfo.FileVersion
+```
+
+압축 파일 이름에도 버전을 넣는다 — `like-bot-v2-2.0.1.zip`. 폴더 이름
+(`dist/like-bot-v2/`)과 exe 이름은 **버전을 붙이지 않는다**: 받는 사람이 만들어
+둔 백신 제외 경로와 바탕화면 바로가기가 버전마다 깨진다 (§6).
+
+```powershell
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    (Resolve-Path dist\like-bot-v2).Path,
+    (Join-Path (Resolve-Path dist).Path 'like-bot-v2-2.0.1.zip'),
+    [System.IO.Compression.CompressionLevel]::Optimal, $true)
+```
+
+`Compress-Archive`가 아니라 .NET을 직접 부르는 이유는 속도다 — 같은 폴더에
+`Compress-Archive`는 수 분, 이쪽은 25초.
+
 ## 2. onedir이다 — onefile로 바꾸지 말 것
 
 `EXE(exclude_binaries=True)` + `COLLECT`, 즉 폴더 배포다. onefile로 묶으면
