@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "like-bot-v2"
-version = "0.1.0"
+dynamic = ["version"]
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.27",
@@ -20,6 +20,11 @@ build = ["pyinstaller>=6.10"]
 
 [tool.setuptools]
 packages = ["engine", "desktop"]
+
+# 버전은 engine/version.py 한 곳에서만 온다 — 창 제목과 exe 속성창도
+# 같은 값을 읽는다.
+[tool.setuptools.dynamic]
+version = {attr = "engine.version.__version__"}
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

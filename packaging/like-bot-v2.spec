@@ -13,11 +13,61 @@ chromium은 이 PC의 playwright 캐시에서 통째로 실어 보낸다 — 받
 직접 내려받는다. 어느 쪽이든 engine/browsers.py가 알아서 고른다.
 """
 import os
+import re
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_entry_point
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo,
+    StringFileInfo,
+    StringStruct,
+    StringTable,
+    VarFileInfo,
+    VarStruct,
+    VSVersionInfo,
+)
 
 ROOT = Path(SPECPATH).parent
+
+
+def _version() -> tuple[str, tuple[int, int, int, int]]:
+    """engine/version.py에서 버전을 읽는다.
+
+    import 하지 않고 읽는 이유: 스펙은 PyInstaller가 exec 하는 스크립트라
+    ROOT가 sys.path에 없고, engine을 import 하면 빌드 대상 패키지를 빌드
+    스크립트가 먼저 끌어들이게 된다. 문자열 하나를 위해 치를 값이 아니다.
+    """
+    text = (ROOT / "engine" / "version.py").read_text(encoding="utf-8")
+    m = re.search(r'^__version__ = "([^"]+)"', text, re.M)
+    if not m:
+        raise SystemExit("engine/version.py에서 __version__을 찾지 못했다")
+    dotted = m.group(1)
+    parts = [int(x) for x in dotted.split(".")] + [0, 0, 0, 0]
+    return dotted, tuple(parts[:4])
+
+
+VERSION, VERSION_TUPLE = _version()
+
+# exe 속성창(자세히 탭)에 버전을 박는다. 배포본은 폴더째 압축해서 돌아다니고
+# 압축 파일 이름은 쉽게 바뀌므로, 받은 사람이 "이게 몇 번이냐"를 확인할 수
+# 있는 곳은 사실상 파일 속성뿐이다. 창 제목도 같은 값을 쓴다 (desktop/app.py).
+VERSION_RESOURCE = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=VERSION_TUPLE, prodvers=VERSION_TUPLE),
+    kids=[
+        StringFileInfo([
+            StringTable("041204B0", [  # 한국어(ko-KR) · 유니코드
+                StringStruct("CompanyName", "delfino"),
+                StringStruct("FileDescription", "blog search & like"),
+                StringStruct("FileVersion", VERSION),
+                StringStruct("InternalName", "like-bot-v2"),
+                StringStruct("OriginalFilename", "like-bot-v2.exe"),
+                StringStruct("ProductName", "like-bot-v2"),
+                StringStruct("ProductVersion", VERSION),
+            ]),
+        ]),
+        VarFileInfo([VarStruct("Translation", [0x0412, 1200])]),
+    ],
+)
 
 
 def _playwright_cache() -> Path:
@@ -92,6 +142,7 @@ exe = EXE(
     # 콘솔 창을 띄우지 않는다. 대신 잡히지 않은 예외는 bootstrap()이
     # logs/crash.log에 남기고 대화상자로 알린다 — desktop/app.py.
     console=False,
+    version=VERSION_RESOURCE,
 )
 
 coll = COLLECT(
