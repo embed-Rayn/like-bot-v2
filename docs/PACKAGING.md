@@ -105,18 +105,16 @@ PyInstaller는 빈 디렉터리를 그냥 버리므로, chromium 캐시가 없�
 개발 실행(얼리지 않은 실행)은 건드리지 않고 이 PC의 `ms-playwright` 캐시를
 그대로 쓴다. 둘을 섞는 것이 "내 PC에선 되는데"가 생기는 경로다.
 
-## 4. PyInstaller가 스스로 못 찾는 것 두 가지
+## 4. PyInstaller가 스스로 못 찾는 것
 
-둘 다 `pyinstaller-hooks-contrib` 6.22 기준으로 훅이 **없다**는 것을 확인했다.
+`pyinstaller-hooks-contrib` 6.22 기준으로 훅이 **없다**는 것을 확인했다.
 
 1. **playwright 드라이버** — `collect_all("playwright")`.
    playwright는 순수 파이썬 패키지가 아니다. `driver/` 아래 `node.exe`와
    `cli.js`가 있고, 빠지면 배포본이 `Executable doesn't exist`로 죽는다.
-2. **keyring 백엔드** — `collect_entry_point("keyring.backends")` +
-   hiddenimport `keyring.backends.Windows`.
-   keyring은 백엔드를 진입점으로 **늦게** 찾는다. 그래서 빠져도 import는
-   멀쩡히 되고, 비밀번호를 조회하는 순간에 `No recommended backend`로 죽는다.
-   증상이 원인에서 멀리 떨어져 나타나는 종류다.
+
+keyring 훅(`collect_entry_point("keyring.backends")`)은 2026-09-11에 빠졌다.
+앱이 자격증명을 저장하지 않으므로(자동 로그인 폐지) keyring 자체를 쓰지 않는다.
 
 `win32timezone`도 hiddenimport에 있다 — pywin32가 런타임에만 import 한다.
 
@@ -178,7 +176,8 @@ PyInstaller 배포본은 흔히 `Wacatac`/`Trojan:Script/*` 계열 휴리스틱�
 
 - 폴더째 압축을 풀 것. exe 하나만 꺼내면 동작하지 않는다.
 - 첫 실행에서 SmartScreen이 뜨면 **추가 정보 → 실행**.
-- 아이디/비밀번호는 앱에 한 번 입력하면 Windows 자격 증명 관리자(keyring)에
-  들어간다. 저장소나 배포본에는 들어가지 않는다.
+- **비밀번호는 앱에 입력하지 않는다.** 세션이 없으면 로그인 창이 열리므로 거기서
+  직접 로그인한다. 앱이 대신 입력하면 네이버가 추가 확인 화면을 띄우고, 반복되면
+  계정 보호 조치로 이어진다. 한 번 로그인하면 세션이 저장돼 다음부터는 안 뜬다.
 - 처음에는 **드라이런** 체크 → 그다음 방문 상한 3, 블로그당 공감 1로 작게.
 - 문제가 생기면 **📁 로그 폴더**의 가장 최근 `run-*.jsonl`을 보낼 것.
