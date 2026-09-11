@@ -392,7 +392,7 @@ async def test_run_engine_closes_session_and_skips_runner_when_stop_requested_fi
     class FakeSession:
         page = None
 
-        async def open(self, account, password_supplier, **_kwargs):
+        async def open(self, account, **_kwargs):
             return self
 
         async def close(self):
@@ -423,7 +423,7 @@ async def test_run_engine_closes_session_and_skips_runner_when_stop_requested_fi
     assert errors == []
 
     window._stop_requested = True
-    result = await window._run_engine(config, "pw", lambda e: None)
+    result = await window._run_engine(config, lambda e: None)
 
     assert result is None
     assert closed == {"session": True}
@@ -437,7 +437,7 @@ async def test_run_engine_does_not_leak_a_history_connection_on_non_login_failur
     누락 등)로 실패해도, History는 open() 성공 이후에만 만들어지므로 닫을
     커넥션 자체가 없다 — 새는 커넥션이 생기지 않는다."""
     class FakeSession:
-        async def open(self, account, password_supplier, **_kwargs):
+        async def open(self, account, **_kwargs):
             raise RuntimeError("chromium binary missing")
 
     history_created = {"called": False}
@@ -465,7 +465,7 @@ async def test_run_engine_does_not_leak_a_history_connection_on_non_login_failur
     assert errors == []
 
     with pytest.raises(RuntimeError):
-        await window._run_engine(config, "pw", lambda e: None)
+        await window._run_engine(config, lambda e: None)
 
     assert history_created["called"] is False
     assert window.runner is None
@@ -483,10 +483,7 @@ def started(window, monkeypatch):
     """on_run을 엔진 없이 돌린다. 시작된 실행의 RunConfig를 붙잡아 돌려준다."""
     captured = {}
 
-    monkeypatch.setattr("desktop.app.keyring.set_password", lambda *a, **k: None)
-    monkeypatch.setattr("desktop.app.keyring.get_password", lambda *a, **k: "pw")
-
-    def fake_run_engine(config, password, emit):
+    def fake_run_engine(config, emit):
         captured["config"] = config
 
     monkeypatch.setattr(window, "_run_engine", fake_run_engine)
@@ -528,58 +525,47 @@ def test_top_stop_button_turns_red_while_running(started):
     assert "#b00020" in window.stop_button.styleSheet()
 
 
-# ---------------- 로그인: 저장된 비밀번호가 없어도 실행된다 ----------------
+# ---------------- 앱은 비밀번호를 묻지 않는다 (2026-09-11) ----------------
 #
-# 설계 결정 3은 세션 재사용이 핵심이다. 그런데 예전 게이트는 저장된 비밀번호가
-# 없으면 세션이 멀쩡해도 실행을 거부했다 — 세션만으로 돌 수 있다는 설계가
-# 화면에서 막혀 있었다. 비밀번호는 세션이 없을 때만 필요하다.
+# 자동 입력이 네이버의 "보안을 위해 추가 확인" 화면을 부르고, 반복되면 계정
+# 보호 조치로 이어진다 (engine/session.py의 _login). 앱이 자격증명을 대신
+# 입력하지 않기로 했으므로 받아 둘 이유도 없다. 입력칸을 남겨 두면 운영자는
+# 그것이 쓰인다고 믿고 입력한다 — 아무 일도 하지 않는 칸이 더 나쁘다.
 
 
-@pytest.fixture
-def no_stored_password(window, monkeypatch):
-    """저장된 비밀번호가 없는 상태. 모달 경고는 테스트를 멈추므로 가로챈다."""
+def test_the_window_has_no_password_field(window):
+    assert not hasattr(window, "password_input"), (
+        "비밀번호 입력칸이 남아 있습니다. 앱은 자격증명을 입력하지 않습니다."
+    )
+
+
+def test_the_app_does_not_store_credentials(window):
+    import desktop.app as app
+
+    assert not hasattr(app, "keyring"), (
+        "keyring이 남아 있습니다 — 쓰지 않는 자격증명 저장소는 유지할 이유가 없습니다."
+    )
+
+
+def test_run_starts_without_any_password(window, monkeypatch):
+    """세션이 살아 있으면 로그인 자체를 하지 않고, 없으면 창이 열린다."""
     from PyQt6.QtWidgets import QMessageBox
 
     captured = {"warnings": []}
-
-    monkeypatch.setattr("desktop.app.keyring.set_password", lambda *a, **k: None)
-    monkeypatch.setattr("desktop.app.keyring.get_password", lambda *a, **k: None)
     monkeypatch.setattr(
         QMessageBox, "warning", lambda *a, **k: captured["warnings"].append(a[2:])
     )
-
-    def fake_run_engine(config, password, emit):
-        captured["config"] = config
-        captured["password"] = password
-
-    monkeypatch.setattr(window, "_run_engine", fake_run_engine)
+    monkeypatch.setattr(
+        window, "_run_engine", lambda config, emit: captured.__setitem__("config", config)
+    )
     monkeypatch.setattr(window.bridge, "start", lambda factory: factory(lambda _e: None))
 
     window.account_input.setText("someaccount")
     window.panels[0].keyword_input.setText("헬스장")
-    return window, captured
-
-
-def test_run_starts_when_no_password_is_stored(no_stored_password):
-    """세션이 살아 있을 수 있으므로 비밀번호가 없다고 막지 않는다."""
-    window, captured = no_stored_password
-
     window.run_button.click()
 
-    assert "config" in captured, (
-        f"저장된 비밀번호가 없다고 실행을 거부했습니다: {captured['warnings']}"
-    )
-    assert captured["password"] == "", (
-        f"비밀번호가 없으면 빈 문자열이어야 합니다: {captured['password']!r}"
-    )
-
-
-def test_missing_password_does_not_warn(no_stored_password):
-    window, captured = no_stored_password
-
-    window.run_button.click()
-
-    assert not captured["warnings"], "비밀번호가 없다고 경고를 띄웠습니다."
+    assert "config" in captured, f"실행이 거부됐습니다: {captured['warnings']}"
+    assert not captured["warnings"], "경고를 띄웠습니다."
 
 
 # ---------------- 로그인이 막히면 운영자에게 알린다 ----------------
@@ -610,7 +596,7 @@ async def test_run_engine_gives_the_session_a_challenge_callback(window, monkeyp
         def __init__(self, _paths):
             pass
 
-        async def open(self, _account, _supplier, **kwargs):
+        async def open(self, _account, **kwargs):
             seen["on_challenge"] = kwargs.get("on_challenge")
             raise _StopHere()
 
@@ -628,15 +614,18 @@ async def test_run_engine_gives_the_session_a_challenge_callback(window, monkeyp
 
     events = []
     with pytest.raises(_StopHere):
-        await window._run_engine(config, "pw", events.append)
+        await window._run_engine(config, events.append)
 
     callback = seen.get("on_challenge")
     assert callback is not None, "session.open()에 안내 콜백을 넘기지 않았습니다."
 
+    before = len(events)
     callback("추가 확인이 필요합니다")
-    assert events, "콜백을 불러도 아무 이벤트가 나오지 않았습니다."
-    assert "추가 확인" in events[0].text
-    assert events[0].keyword == "", "안내는 전역 메시지여야 합니다."
+    assert len(events) > before, "콜백을 불러도 아무 이벤트가 나오지 않았습니다."
+    # 실행 시작에 기록 경로 한 줄이 먼저 나가므로 인덱스로 집지 않는다.
+    notice = events[-1]
+    assert "추가 확인" in notice.text
+    assert notice.keyword == "", "안내는 전역 메시지여야 합니다."
 
 
 # ---------------- 배포본 부트스트랩 · 브라우저 확보 ----------------
@@ -701,7 +690,7 @@ async def test_run_engine_secures_the_browser_before_opening_the_session(
     class FakeSession:
         page = None
 
-        async def open(self, account, password_supplier, **_kwargs):
+        async def open(self, account, **_kwargs):
             order.append("open")
             return self
 
@@ -726,7 +715,7 @@ async def test_run_engine_secures_the_browser_before_opening_the_session(
 
     window._stop_requested = True  # open() 직후 반환시켜 Runner까지 가지 않게 한다
     events: list[object] = []
-    await window._run_engine(config, "pw", events.append)
+    await window._run_engine(config, events.append)
 
     assert order == ["ensure", "open"]
     assert any(
@@ -770,7 +759,7 @@ def _stub_session_that_stops(monkeypatch, on_open=None):
         def __init__(self, _paths):
             pass
 
-        async def open(self, _account, _supplier, **kwargs):
+        async def open(self, _account, **kwargs):
             if on_open is not None:
                 on_open(kwargs)
 
@@ -788,7 +777,7 @@ async def test_run_engine_writes_a_log_file_for_the_run(window, monkeypatch):
     _stub_session_that_stops(monkeypatch)
     window._stop_requested = True  # Runner까지 가지 않게 한다
 
-    await window._run_engine(_valid_config(), "pw", lambda _e: None)
+    await window._run_engine(_valid_config(), lambda _e: None)
 
     files = _run_logs(window)
     assert len(files) == 1, "실행 로그 파일이 남지 않았습니다."
@@ -804,7 +793,7 @@ async def test_run_engine_logs_events_that_also_reach_the_ui(window, monkeypatch
     window._stop_requested = True
 
     events: list[object] = []
-    await window._run_engine(_valid_config(), "pw", events.append)
+    await window._run_engine(_valid_config(), events.append)
 
     from engine.events import LogLine
 
@@ -822,7 +811,7 @@ async def test_run_engine_logs_the_login_challenge_notice(window, monkeypatch):
     _stub_session_that_stops(monkeypatch, on_open=raise_challenge)
     window._stop_requested = True
 
-    await window._run_engine(_valid_config(), "pw", lambda _e: None)
+    await window._run_engine(_valid_config(), lambda _e: None)
 
     written = _run_logs(window)[0].read_text(encoding="utf-8")
     assert "추가 확인이 필요합니다" in written
@@ -837,7 +826,7 @@ async def test_run_engine_closes_the_log_when_the_run_blows_up(window, monkeypat
     _stub_session_that_stops(monkeypatch, on_open=boom)
 
     with pytest.raises(_StopHere):
-        await window._run_engine(_valid_config(), "pw", lambda _e: None)
+        await window._run_engine(_valid_config(), lambda _e: None)
 
     written = _run_logs(window)[0].read_text(encoding="utf-8")
     assert "브라우저 확인 중" in written
@@ -847,7 +836,7 @@ async def test_run_engine_reuses_one_run_id_for_log_and_runner(window, monkeypat
     _stub_session_that_stops(monkeypatch)
     window._stop_requested = True
 
-    await window._run_engine(_valid_config(), "pw", lambda _e: None)
+    await window._run_engine(_valid_config(), lambda _e: None)
 
     path = _run_logs(window)[0]
     header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])

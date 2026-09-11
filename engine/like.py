@@ -17,7 +17,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from engine.models import LikeOutcome, LikeResult
-from engine.session import LOGIN_HOST
+from engine.session import LOGIN_HOST, LOGIN_PROBE_URL, LOGIN_PROBE_TIMEOUT_MS
 
 # 2026-08-31 실측. 클래스가 u_likeit_list_btn → u_likeit_button _face 로 바뀌었고,
 # 글 하나에 같은 버튼이 둘 렌더링된다.
@@ -107,6 +107,55 @@ def classify_like_api_status(status: int | None) -> LikeOutcome | None:
     if status in (403, 429):
         return LikeOutcome.BLOCKED
     return LikeOutcome.ERROR
+
+
+# 401을 받았을 때 "우리 세션이 죽었다"와 "세션은 멀쩡한데 공감만 거부됐다"는
+# 대응이 정반대다. 앞이면 다시 로그인하면 되고, 뒤면 다시 로그인해도 아무
+# 소용이 없다 — 계정 쪽 제한이라 사람이 네이버에서 풀어야 한다. 구분하지
+# 않으면 운영자는 효과 없는 재로그인을 반복한다 (2026-09-11~12에 실제로
+# 그 고리에 갇혔다: blog.naver.com에서는 세션이 살아 있다고 확인되는데
+# 공감만 401이었다).
+API_REJECT_SESSION_DEAD = "공감 API 401 · 세션 만료 — 다시 로그인"
+API_REJECT_SESSION_ALIVE = "공감 API 401 · 세션은 살아 있음 — 계정 제한 의심"
+
+
+def classify_rejection(
+    status: int | None, *, session_alive: bool
+) -> tuple[LikeOutcome, str] | None:
+    """공감 API의 statusCode와 세션 생존 여부로 거부 원인을 가른다. 순수 함수.
+
+    거부가 없으면 None — 호출자가 DOM으로 성공을 확인한다 (성공 응답의 모양을
+    가정하지 않는다는 규칙 그대로).
+    """
+    outcome = classify_like_api_status(status)
+    if outcome is None:
+        return None
+    if outcome is LikeOutcome.NOT_LOGGED_IN:
+        return (
+            (LikeOutcome.NOT_LOGGED_IN, API_REJECT_SESSION_DEAD)
+            if not session_alive
+            else (LikeOutcome.BLOCKED, API_REJECT_SESSION_ALIVE)
+        )
+    return outcome, ""
+
+
+async def session_still_alive(page: Page) -> bool:
+    """이 탭의 세션이 아직 살아 있는가 — engine.session._is_logged_in과 같은 신호.
+
+    로그인 필수 페이지를 열어 보고 nid 로그인 폼으로 튕기면 죽은 것이다.
+    실패(타임아웃 등)는 "살아 있다"로 친다: 확신이 없을 때 "세션이 죽었다"고
+    단정하면 멀쩡한 세션을 두고 재로그인을 시키게 되고, 그것이 바로
+    계정 보호조치를 부르는 행동이다 (CLAUDE.md).
+    """
+    try:
+        await page.goto(
+            LOGIN_PROBE_URL,
+            wait_until="domcontentloaded",
+            timeout=LOGIN_PROBE_TIMEOUT_MS,
+        )
+    except (PlaywrightTimeout, PlaywrightError):
+        return True
+    return LOGIN_HOST not in page.url
 
 
 FRAME = "#mainFrame"
@@ -288,9 +337,16 @@ async def press_like(
         except PlaywrightError as exc:
             return LikeResult(LikeOutcome.ERROR, detail(STAGE_CLICK, exc) + stale)
 
-        rejected = classify_like_api_status(await watcher.status())
-    if rejected is not None:
-        return LikeResult(rejected, detail(STAGE_API) + stale)
+        status = await watcher.status()
+
+    if classify_like_api_status(status) is not None:
+        # 401이면 세션이 정말 죽었는지 먼저 물어본다. 실패 경로에서만 드는
+        # 비용이고, 그 한 번이 "재로그인하면 되는 문제"와 "재로그인해도
+        # 소용없는 문제"를 가른다.
+        alive = await session_still_alive(page)
+        rejected, cause = classify_rejection(status, session_alive=alive)
+        why = f"{detail(STAGE_API)} · {cause}" if cause else detail(STAGE_API)
+        return LikeResult(rejected, why + stale)
 
     # 거부는 없었다. 이제 DOM으로 확인한다 — 성공 응답의 형태를 가정하지
     # 않기 위해서다. 여기서 나는 TIMEOUT은 "눌렀는데 반영되지 않았다"는

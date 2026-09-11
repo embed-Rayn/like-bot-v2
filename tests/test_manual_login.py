@@ -28,7 +28,7 @@ class _FakeContext:
             return [{"name": "NID_AUT", "value": "x"}]
         return [{"name": "NNB", "value": "y"}]
 
-    async def clear_cookies(self) -> None:
+    async def clear_cookies(self, *, name: str | None = None, **_kw) -> None:
         """낡은 세션을 버리는 자리. 카운터는 건드리지 않는다 — 이 페이크는
         '몇 번째 조회에서 쿠키가 생기는가'로 사람의 로그인을 흉내 낸다."""
         self.cleared = True
@@ -62,6 +62,9 @@ async def test_wait_does_not_navigate_the_page_the_operator_is_typing_into():
     session._context = _FakeContext(appears_at=1)
 
     class _PageThatMustNotMove:
+        def is_closed(self) -> bool:
+            return False
+
         async def goto(self, *_a, **_kw):
             raise AssertionError("대기 중에 페이지를 이동시켰습니다.")
 
@@ -92,6 +95,9 @@ async def test_bootstrap_never_types_a_password(monkeypatch, tmp_path):
         pass
 
     class _Page:
+        def is_closed(self) -> bool:
+            return False
+
         async def goto(self, *_a, **_kw):
             logged["value"] = True    # 사람이 로그인을 끝낸 상황을 흉내 낸다
 

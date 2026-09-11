@@ -9,7 +9,7 @@ Windows 버전 리소스는 숫자 네 칸(major, minor, patch, build)을 요구
 """
 from __future__ import annotations
 
-__version__ = "2.0.4"
+__version__ = "2.2.2"
 
 
 def version_tuple() -> tuple[int, int, int, int]:

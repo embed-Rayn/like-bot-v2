@@ -200,3 +200,48 @@ def test_run_log_is_a_no_op_when_disabled(tmp_path):
     assert log.failed
     assert log.path is None
     assert not list(tmp_path.iterdir())
+
+
+# ---- 실행 기록이 어디에 쓰였는지 화면에 남긴다 (2026-09-12) ----
+# Microsoft Store 파이썬은 %LOCALAPPDATA% **쓰기**를 Packages\...\LocalCache\Local
+# 아래로 돌린다. 프로세스 안에서는 읽기도 함께 돌아가므로 이 사실이 전혀 보이지
+# 않는다 — 우리가 찍는 경로는 멀쩡해 보이는데 탐색기로 열면 거기 파일이 없다.
+# 실제로 그것 때문에 "실행했는데 로그가 없다"로 진단이 한 바퀴 돌았다.
+
+from engine.runlog import is_store_python, log_location_notice
+
+NORMAL_PREFIX = r"C:\Python313"
+STORE_PREFIX = r"C:\Users\x\AppData\Local\Programs\PythonSoftwareFoundation.Python.3.13_q"
+
+
+def test_a_normal_python_gets_the_plain_path(monkeypatch, tmp_path):
+    monkeypatch.setattr("engine.runlog.sys.base_prefix", NORMAL_PREFIX)
+    target = tmp_path / "run-abc.jsonl"
+
+    notice = log_location_notice(target)
+
+    assert str(target) in notice
+    assert "Store" not in notice
+
+
+def test_store_python_says_where_the_file_really_is(monkeypatch, tmp_path):
+    monkeypatch.setattr("engine.runlog.sys.base_prefix", STORE_PREFIX)
+    target = tmp_path / "run-abc.jsonl"
+
+    notice = log_location_notice(target)
+
+    assert "run-abc.jsonl" in notice, "파일 이름조차 없으면 찾을 방법이 없습니다."
+    assert "LocalCache" in notice, (
+        f"리디렉션 사실을 말하지 않습니다 — 탐색기로는 못 찾습니다: {notice}"
+    )
+
+
+def test_a_log_that_could_not_be_opened_says_so(monkeypatch):
+    monkeypatch.setattr("engine.runlog.sys.base_prefix", NORMAL_PREFIX)
+
+    assert "열지 못" in log_location_notice(None)
+
+
+def test_store_python_detection_reads_the_prefix():
+    assert is_store_python(STORE_PREFIX) is True
+    assert is_store_python(NORMAL_PREFIX) is False

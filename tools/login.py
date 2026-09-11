@@ -5,7 +5,11 @@
 로그인한다. 저장된 세션 덕분에 이후 드라이런·실행은 로그인 페이지를 거치지
 않는다 (설계 결정 3의 storage_state 재사용).
 
-비밀번호를 묻지 않는다 — 이 도구는 창을 열어 줄 뿐이다.
+비밀번호를 묻지 않는다 — 이 도구는 창을 열어 줄 뿐이다. 앱도 마찬가지다
+(자동 입력 폐지, 2026-09-11).
+
+기다리는 동안 창을 닫으면 즉시 중단된다. 타이머는 잊고 자리를 뜬 경우의
+뒷받침일 뿐이므로 넉넉하다 — 보호조치 해제는 5분 안에 끝나지 않는다.
 
     python tools/login.py <네이버ID> [--timeout 300]
 """
@@ -18,7 +22,7 @@ import sys
 from engine.paths import AppPaths
 from engine.session import MANUAL_LOGIN_TIMEOUT_S, BrowserSession
 
-MAX_TIMEOUT_S = 1800
+MAX_TIMEOUT_S = 3600
 
 
 async def main_async(account: str, timeout_s: float) -> bool:
