@@ -110,74 +110,6 @@ def test_additional_verification_page_is_recognized_as_captcha():
     ) is CaptchaRequired
 
 
-class _FakeKeyboard:
-    async def insert_text(self, text: str) -> None:
-        pass
-
-
-class _FakeLocator:
-    def __init__(self, page: "_FakeLoginPage") -> None:
-        self._page = page
-
-    def locator(self, _selector: str) -> "_FakeLocator":
-        return self
-
-    @property
-    def first(self) -> "_FakeLocator":
-        return self
-
-    async def click(self) -> None:
-        self._page.clicked = True
-
-
-class _FakeLoginPage:
-    """클릭 직후에는 아직 로그인 폼에 머물러 있고, 기다려야 전이가 끝난다.
-
-    실제 관측(2026-08-31): 클릭 후 판정 시점의 URL이 여전히 로그인 폼이었다.
-    wait_for_load_state("domcontentloaded")는 현재 문서가 이미 로드돼 있으면
-    즉시 반환하므로 전이를 기다려 주지 않는다.
-    """
-
-    def __init__(self) -> None:
-        self.url = "https://nid.naver.com/nidlogin.login?mode=form"
-        self.clicked = False
-        self.waited = False
-        self.keyboard = _FakeKeyboard()
-
-    async def goto(self, url: str, **_kw) -> None:
-        self.url = url
-
-    async def click(self, _selector: str) -> None:
-        pass
-
-    def locator(self, _selector: str) -> _FakeLocator:
-        return _FakeLocator(self)
-
-    async def wait_for_url(self, _predicate, **_kw) -> None:
-        self.waited = True
-        self.url = "https://www.naver.com/"
-
-    async def wait_for_load_state(self, *_a, **_kw) -> None:
-        pass
-
-    async def inner_text(self, _selector: str) -> str:
-        return LOGIN_FORM_TEXT if "nid.naver.com" in self.url else "네이버 메인"
-
-
-async def test_login_waits_for_the_post_click_transition_before_judging(monkeypatch):
-    session = BrowserSession(AppPaths.for_app())
-    session.page = _FakeLoginPage()
-
-    async def logged_in(_self) -> bool:
-        return True
-
-    monkeypatch.setattr(BrowserSession, "_is_logged_in", logged_in)
-
-    await session._login("someid", "somepw")   # 예외가 나면 안 된다
-
-    assert session.page.waited, "클릭 후 전이를 기다리지 않고 화면을 판정했습니다."
-
-
 def test_saved_state_loads_back_as_a_mapping(tmp_path):
     """Playwright의 storage_state는 경로 또는 dict만 받는다.
 
@@ -232,32 +164,27 @@ class _FakeContext:
         return self._answers[0]
 
 
-class _FakeChallengePage(_FakeLoginPage):
-    """클릭해도 로그인 호스트를 벗어나지 못하고 추가 확인 화면에 머문다."""
+class _FakeChallengePage:
+    """로그인 호스트에 머무는 화면. 폼을 건드리는 호출은 존재하지 않는다."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.typed: list[str] = []
-        self.keyboard = self._recording_keyboard()
+    def __init__(self, text: str = EXTRA_VERIFY_TEXT) -> None:
+        self.url = "https://nid.naver.com/nidlogin.login?mode=form"
+        self._text = text
+        self.visited: list[str] = []
 
-    def _recording_keyboard(self):
-        typed = self.typed
+    def is_closed(self) -> bool:
+        return False
 
-        class _Recorder:
-            async def insert_text(self, text: str) -> None:
-                typed.append(text)
-
-        return _Recorder()
-
-    async def wait_for_url(self, _predicate, **_kw) -> None:
-        self.waited = True      # 기다리기는 하지만 전이는 끝내 일어나지 않는다
+    async def goto(self, url: str, **_kw) -> None:
+        self.visited.append(url)
+        self.url = url
 
     async def inner_text(self, _selector: str) -> str:
-        return EXTRA_VERIFY_TEXT
+        return self._text
 
 
-async def test_captcha_hands_the_window_to_the_operator(monkeypatch):
-    """추가 확인 화면이 떠도 예외를 던지지 않고, 사람이 끝내면 그대로 진행한다."""
+async def test_challenge_hands_the_window_to_the_operator(monkeypatch):
+    """막힌 화면이 떠도 예외를 던지지 않고, 사람이 끝내면 그대로 진행한다."""
     session = BrowserSession(AppPaths.for_app())
     session.page = _FakeChallengePage()
     session._context = _FakeContext([{"name": "NID_AUT"}])   # 사람이 이미 끝냈다
@@ -268,14 +195,14 @@ async def test_captcha_hands_the_window_to_the_operator(monkeypatch):
     monkeypatch.setattr(BrowserSession, "_is_logged_in", logged_in)
 
     seen: list[str] = []
-    await session._login("someid", "somepw", on_challenge=seen.append)
+    await session._login("someid", on_challenge=seen.append)
 
     assert seen, "운영자에게 알리지 않고 조용히 기다렸습니다."
-    assert "추가 확인" in seen[0], f"캡차라고 알려주지 않았습니다: {seen[0]!r}"
+    assert "추가 확인" in seen[0], f"무엇을 해야 하는지 알려주지 않았습니다: {seen[0]!r}"
 
 
 async def test_manual_handoff_timeout_raises_the_original_failure(monkeypatch):
-    """사람이 시간 안에 끝내지 못하면 원래의 실패 종류를 그대로 던진다."""
+    """사람이 시간 안에 끝내지 못하면 화면에서 읽어낸 실패 종류를 그대로 던진다."""
     session = BrowserSession(AppPaths.for_app())
     session.page = _FakeChallengePage()
     session._context = _FakeContext([])      # 끝내 로그인되지 않는다
@@ -286,17 +213,13 @@ async def test_manual_handoff_timeout_raises_the_original_failure(monkeypatch):
     monkeypatch.setattr(BrowserSession, "_is_logged_in", logged_in)
 
     with pytest.raises(CaptchaRequired):
-        await session._login("someid", "somepw", manual_timeout_s=0)
+        await session._login("someid", manual_timeout_s=0)
 
 
-async def test_login_without_a_password_skips_autofill_and_waits(monkeypatch):
-    """비밀번호가 없으면 자동 입력을 아예 하지 않고 바로 사람에게 넘긴다.
-
-    저장된 세션이 없고 비밀번호도 없는 경우다. 빈 문자열을 폼에 밀어 넣으면
-    네이버에 실패한 로그인 시도가 기록될 뿐이므로 창만 열어 준다.
-    """
+async def test_plain_login_form_still_tells_the_operator_what_to_do(monkeypatch):
+    """자동 입력을 하지 않으므로 보통은 평범한 로그인 폼이다 — 그래도 안내는 나간다."""
     session = BrowserSession(AppPaths.for_app())
-    session.page = _FakeChallengePage()
+    session.page = _FakeChallengePage(LOGIN_FORM_TEXT)
     session._context = _FakeContext([{"name": "NID_AUT"}])
 
     async def logged_in(_self) -> bool:
@@ -304,11 +227,10 @@ async def test_login_without_a_password_skips_autofill_and_waits(monkeypatch):
 
     monkeypatch.setattr(BrowserSession, "_is_logged_in", logged_in)
 
-    await session._login("someid", "", on_challenge=lambda _m: None)
+    seen: list[str] = []
+    await session._login("someid", on_challenge=seen.append)
 
-    assert session.page.typed == [], (
-        f"비밀번호 없이도 폼에 입력했습니다: {session.page.typed!r}"
-    )
+    assert seen and "로그인" in seen[0], f"안내가 비었습니다: {seen!r}"
 
 
 # ---- 로그인 판정은 서버에 묻는다 (2026-09-10) ----
@@ -327,45 +249,53 @@ class _FakeCookieContext:
     async def cookies(self) -> list[dict]:
         return [{"name": n} for n in self._names]
 
-    async def clear_cookies(self) -> None:
+    async def clear_cookies(self, *, name: str | None = None, **_kw) -> None:
         self.cleared = True
-        self._names = []
+        self._names = [n for n in self._names if n != name] if name else []
 
 
 class _FakeNavPage:
-    """goto한 곳에 그대로 머무는 페이지 — 리다이렉트가 없다 = 로그아웃."""
+    """로그인 필수 페이지를 흉내 낸다.
 
-    def __init__(self, lands_on: str | None = None) -> None:
+    `bounces=True`는 로그아웃 상태 — 네이버가 서버측 302로 nid 로그인 폼에
+    데려다 놓는다. `bounces=False`는 세션이 살아 있어 그 페이지에 그대로
+    도착한 상태다.
+    """
+
+    def __init__(self, *, bounces: bool = True) -> None:
         self.url = "about:blank"
-        self._lands_on = lands_on
+        self._bounces = bounces
         self.visited: list[str] = []
 
     async def goto(self, url: str, **_kw) -> None:
         self.visited.append(url)
-        self.url = self._lands_on or url
+        self.url = (
+            f"https://nid.naver.com/nidlogin.login?mode=form&url={url}"
+            if self._bounces
+            else url
+        )
 
 
 async def test_stale_cookie_alone_is_not_accepted_as_logged_in():
     """만료된 세션은 쿠키가 남아 있어도 로그아웃으로 판정돼야 한다."""
     session = BrowserSession(AppPaths.for_app())
     session._context = _FakeCookieContext(["NID_AUT", "NID_SES"])
-    session.page = _FakeNavPage()   # 로그인 호스트에 그대로 머문다
+    session.page = _FakeNavPage(bounces=True)   # 로그인 폼으로 튕긴다
 
     assert await session._is_logged_in() is False
 
 
-async def test_a_live_session_is_recognised_by_the_redirect_away():
-    """세션이 살아 있으면 네이버가 로그인 페이지에서 우리를 돌려보낸다."""
+async def test_a_live_session_reaches_the_login_only_page():
+    """세션이 살아 있으면 로그인 필수 페이지에 그대로 도착한다."""
     session = BrowserSession(AppPaths.for_app())
     session._context = _FakeCookieContext(["NID_AUT", "NID_SES"])
-    session.page = _FakeNavPage(lands_on="https://www.naver.com/")
+    session.page = _FakeNavPage(bounces=False)
 
     assert await session._is_logged_in() is True
 
 
-async def test_no_cookie_at_all_skips_the_login_page_entirely():
-    """쿠키가 아예 없으면 볼 것도 없이 로그아웃이다 — 로그인 페이지는
-    가장 방어가 심한 화면이라(결정 3) 갈 이유가 없으면 가지 않는다."""
+async def test_no_cookie_at_all_skips_the_network_entirely():
+    """쿠키가 아예 없으면 볼 것도 없이 로그아웃이다 — 네트워크를 타지 않는다."""
     session = BrowserSession(AppPaths.for_app())
     session._context = _FakeCookieContext([])
     session.page = _FakeNavPage()

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,33 @@ from engine.paths import AppPaths
 
 # 남겨 둘 실행 기록 개수. 진단은 최근 것만 쓰이고, 오래된 것은 디스크만 먹는다.
 KEEP_RUNS = 30
+
+# Microsoft Store 파이썬은 %LOCALAPPDATA% **쓰기**를 조용히 아래로 돌린다:
+#   %LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_*\LocalCache\Local# 프로세스 안에서는 읽기도 같이 돌아가므로 이 사실이 전혀 보이지 않는다 —
+# 우리가 찍는 경로는 멀쩡해 보이는데 탐색기로 열면 거기 파일이 없다.
+# 2026-09-12에 그것 때문에 "실행했는데 로그가 없다"로 진단이 한 바퀴 돌았다.
+STORE_PYTHON_MARK = "PythonSoftwareFoundation.Python"
+STORE_PYTHON_HINT = (
+    r"Store 파이썬이라 실제 파일은 %LOCALAPPDATA%\Packages"
+    r"\PythonSoftwareFoundation.Python.*\LocalCache\Local"
+    r"\like-bot-v2\logs\ 아래에 있습니다"
+)
+
+
+def is_store_python(base_prefix: str | None = None) -> bool:
+    """Store 파이썬으로 돌고 있는가. 경로 문자열만 보는 순수 판정."""
+    return STORE_PYTHON_MARK in (
+        sys.base_prefix if base_prefix is None else base_prefix
+    )
+
+
+def log_location_notice(path: Path | None) -> str:
+    """실행 기록이 어디에 쓰였는지 한 줄로. 리디렉션되면 그 사실까지 말한다."""
+    if path is None:
+        return "실행 기록을 열지 못했습니다 — 이번 실행은 파일로 남지 않습니다."
+    if is_store_python():
+        return f"실행 기록: {path.name} — {STORE_PYTHON_HINT}"
+    return f"실행 기록: {path}"
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 

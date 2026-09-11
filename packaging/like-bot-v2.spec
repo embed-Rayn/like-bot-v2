@@ -16,7 +16,7 @@ import os
 import re
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_entry_point
+from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo,
     StringFileInfo,
@@ -104,19 +104,16 @@ def _browsers_to_ship() -> list[tuple[str, str]]:
 # pyinstaller-hooks-contrib에 playwright 훅이 없으므로(6.22 기준 확인) 직접 모은다.
 pw_datas, pw_binaries, pw_hiddenimports = collect_all("playwright")
 
-# keyring은 백엔드를 진입점(entry point)으로 늦게 찾는다. 정적 분석으로는
-# 보이지 않아서 배포본에서만 "No recommended backend"로 실패한다.
-kr_datas, kr_hiddenimports = collect_entry_point("keyring.backends")
+# keyring 훅은 2026-09-11에 빠졌다. 앱이 자격증명을 저장하지 않으므로
+# (자동 로그인 폐지 — engine/session.py의 _login) keyring 자체를 쓰지 않는다.
 
 a = Analysis(
     [str(ROOT / "desktop" / "app.py")],
     pathex=[str(ROOT)],
     binaries=pw_binaries,
-    datas=pw_datas + kr_datas + _browsers_to_ship(),
+    datas=pw_datas + _browsers_to_ship(),
     hiddenimports=[
         *pw_hiddenimports,
-        *kr_hiddenimports,
-        "keyring.backends.Windows",
         "win32timezone",  # pywin32가 런타임에만 import 한다
     ],
     hookspath=[],

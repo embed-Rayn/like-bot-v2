@@ -26,16 +26,55 @@ LOGIN_URL = (
     "&url=https%3A%2F%2Fwww.naver.com&locale=ko_KR&svctype=1"
 )
 LOGIN_HOST = "nid.naver.com"
+# 로그인 여부를 묻는 자리. **로그인 페이지는 답이 될 수 없다.**
+#
+# 2026-09-11까지 이 검사는 LOGIN_URL을 열고 "아직 nid.naver.com인가"로 판정했다.
+# 그 질문에는 답이 없다 — 로그인 폼이 보인다는 사실은 로그인 상태에서도
+# 로그아웃 상태에서도 일어날 수 있다. 실측(2026-09-11, 로그아웃 컨텍스트)에서
+# 두 주소는 로그아웃일 때 구분이 되지 않았다:
+#     nidlogin.login?mode=form   → nid에 머묾   (원래 그 자리가 로그인 폼이다)
+#     blog.naver.com/MyBlog.naver → nid로 302   (로그인해야만 볼 수 있으므로)
+# 차이는 로그인 상태에서만 드러난다. 앞의 것은 "네이버가 우리를 돌려보내 준다"는
+# 보장되지 않은 동작에 기대고, 뒤의 것은 "로그인 필수 페이지는 로그아웃일 때
+# 튕긴다"는 정의에 기댄다. 그래서 뒤의 것을 쓴다.
+#
+# blog.naver.com을 고른 이유: 공감 API가 사는 바로 그 도메인이라 "공감이 될
+# 세션인가"를 가장 가깝게 묻고, 평범한 블로그 트래픽이라 가장 방어가 심한
+# nid를 실행마다 두드리지 않는다 (결정 3).
+LOGIN_PROBE_URL = "https://blog.naver.com/MyBlog.naver"
+LOGIN_PROBE_TIMEOUT_MS = 20_000
 LOGIN_TRANSITION_TIMEOUT_MS = 15_000
-# 수동 로그인은 사람이 추가 확인 문제를 푸는 시간이다. 넉넉해야 한다.
-MANUAL_LOGIN_TIMEOUT_S = 300
+# 수동 로그인은 사람이 추가 확인·보호조치를 푸는 시간이다.
+#
+# 300초였고, 그것이 운영자가 본인확인을 하는 도중에 창을 닫아 버렸다
+# (2026-09-11: "보호조치로 해제하니깐 꺼졌어"). 휴대폰 본인확인이 들어가는
+# 보호조치 해제는 5분 안에 끝나지 않는다. 타이머가 끝나면 bootstrap_manual의
+# finally가 close()를 부르고, 거기까지 한 일이 전부 날아간다.
+#
+# 그래서 대기의 끝은 타이머가 아니라 사람이다 — 로그인이 끝나거나, 사람이 창을
+# 닫거나(포기). 아래 값은 잊고 자리를 뜬 경우를 위한 뒷받침일 뿐이라 넉넉하다.
+MANUAL_LOGIN_TIMEOUT_S = 1800
 MANUAL_LOGIN_POLL_S = 1.0
+# 말없이 멈춰 있는 창 앞에서는 기다리는 중인지 죽은 것인지 알 수 없다.
+MANUAL_LOGIN_NOTICE_S = 60
+# 폼 셀렉터는 우리가 쓰지 않는다 (자동 입력 폐지, 2026-09-11) — 사람이 창에서
+# 직접 누른다. 그래도 상수와 계약 테스트는 남긴다: 이 셀렉터가 사라지면
+# 네이버가 로그인 화면을 갈아엎었다는 뜻이고, 그건 classify_login_page의 문구
+# 힌트도 같이 낡았다는 신호다 (레거시 결함 2가 재발하는 자리).
+# 만료된 세션에서 버릴 것은 정확히 이 두 개다.
+#
+# 2026-09-11: `_discard_stale_session()`이 `clear_cookies()`를 인자 없이 불러
+# 쿠키를 통째로 비웠다. 저장된 세션에는 인증 쿠키만 있는 게 아니다 — 실측하면
+# NNB · NAC · NACT · BUC · nid_inf 같은 **기기/방문자 식별 쿠키**가 함께 들어
+# 있고(계정 하나 기준 14개 중 대부분), 그것까지 지우면 다음에 열리는 로그인
+# 창에는 네이버가 이 브라우저를 알아볼 단서가 하나도 없다. 즉 매번 "처음 보는
+# 기기에서의 로그인"이 되고, 그것이 추가 확인과 보호조치를 부르는 조건이다.
+# 자동 입력을 없앤 뒤에도 보호조치가 계속 뜬 이유가 이것이었다.
+#
+# 만료된 세션을 버리는 일과 기기 신원을 버리는 일은 전혀 다른 일이다.
+AUTH_COOKIES = ("NID_AUT", "NID_SES")
 LOGIN_ID = "#id"
 LOGIN_PW = "#pw"
-# 로그인 버튼은 반응형 레이아웃 때문에 DOM에 두 벌(column/row)로 들어 있고 그중
-# 한쪽만 보인다. 그래서 항상 "보이는 것"으로 좁혀서 클릭한다. 예전 `.btn_login`은
-# 2026-08-31 확인 시 페이지에서 사라져 있었다 — 실행 시점의 30초 타임아웃으로만
-# 드러났으므로 tests/test_login_page_contract.py가 이 세 셀렉터를 감시한다.
 LOGIN_BUTTON = "#loginBtn_column, #loginBtn_row"
 
 
@@ -161,11 +200,14 @@ class BrowserSession:
     async def open(
         self,
         account: str,
-        password_supplier: Callable[[], str],
         *,
         headless: bool = False,
         on_challenge: Callable[[str], None] | None = None,
     ) -> "BrowserSession":
+        """세션이 살아 있으면 그대로 쓰고, 아니면 로그인 창을 열어 사람에게 넘긴다.
+
+        비밀번호를 받지 않는다 — _login()이 자격증명을 입력하지 않기 때문이다.
+        """
         state_file = self._paths.session_file(account)
 
         try:
@@ -173,9 +215,7 @@ class BrowserSession:
 
             if not await self._is_logged_in():
                 await self._discard_stale_session()
-                await self._login(
-                    account, password_supplier(), on_challenge=on_challenge
-                )
+                await self._login(account, on_challenge=on_challenge)
                 await self._save_state(state_file)
         except Exception:
             # 캡차·2차인증·자격증명 오류는 정상 운영 중에도 자주 일어난다
@@ -202,20 +242,49 @@ class BrowserSession:
         *,
         timeout_s: float = MANUAL_LOGIN_TIMEOUT_S,
         poll_s: float = MANUAL_LOGIN_POLL_S,
+        notify: Callable[[str], None] | None = None,
     ) -> bool:
         """사람이 창에서 직접 로그인을 끝낼 때까지 기다린다.
 
-        _is_logged_in()과 달리 페이지를 이동시키지 않는다 — 운영자가 입력하고
-        있는 화면을 가로채면 로그인 자체가 불가능해진다. 쿠키만 들여다본다.
+        페이지를 이동시키지 않는다 — 운영자가 입력하고 있는 화면을 가로채면
+        로그인 자체가 불가능해진다. 쿠키만 들여다본다.
+
+        끝나는 조건은 셋이다:
+          · NID_AUT가 생겼다            → True  (로그인 완료)
+          · 사람이 창을 닫았다           → False (포기. 더 기다릴 이유가 없다)
+          · timeout_s가 지났다          → False (잊고 자리를 뜬 경우의 뒷받침)
+
+        창이 닫혔는지를 보는 것이 핵심이다. 그게 없으면 타이머 하나가 대기의
+        유일한 끝이 되고, 그 타이머가 짧으면 본인확인 중인 사람의 창을 닫는다
+        (2026-09-11). 길게 잡되 사람이 언제든 끝낼 수 있게 한다.
         """
         deadline = time.monotonic() + timeout_s
+        next_notice = time.monotonic() + MANUAL_LOGIN_NOTICE_S
+        say = notify or (lambda _message: None)
         while True:
-            cookies = await self._context.cookies()
+            if self._window_is_gone():
+                return False
+            try:
+                cookies = await self._context.cookies()
+            except Exception:
+                # 브라우저가 통째로 닫히면 컨텍스트 조회가 실패한다 — 포기와 같다.
+                return False
             if any(c["name"] == "NID_AUT" for c in cookies):
                 return True
-            if time.monotonic() >= deadline:
+
+            now = time.monotonic()
+            if now >= deadline:
                 return False
+            if now >= next_notice:
+                say(f"로그인 완료를 기다리는 중입니다 — 남은 시간 "
+                    f"{max(1, int((deadline - now) / 60))}분. 창을 닫으면 중단됩니다.")
+                next_notice = now + MANUAL_LOGIN_NOTICE_S
             await asyncio.sleep(poll_s)
+
+    def _window_is_gone(self) -> bool:
+        """운영자가 로그인 창을 닫았는가."""
+        page = self.page
+        return page is not None and page.is_closed()
 
     async def bootstrap_manual(
         self,
@@ -246,7 +315,7 @@ class BrowserSession:
             await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
             say("열린 창에서 직접 로그인해 주세요. 완료를 기다립니다.")
 
-            if not await self.wait_for_manual_login(timeout_s=timeout_s):
+            if not await self.wait_for_manual_login(timeout_s=timeout_s, notify=say):
                 say("시간 안에 로그인이 끝나지 않았습니다.")
                 return False
             if not await self._is_logged_in():
@@ -265,14 +334,17 @@ class BrowserSession:
         return any(c["name"] == "NID_AUT" for c in cookies)
 
     async def _discard_stale_session(self) -> None:
-        """로그아웃으로 판정된 뒤 남아 있는 쿠키를 버린다.
+        """만료된 **인증** 쿠키만 버린다. 기기 신원은 남긴다.
 
-        저장된 세션은 우리가 컨텍스트에 실어 준 것이라, 만료된 뒤에도 그대로
-        남는다. 그걸 남겨 두면 wait_for_manual_login()이 그 NID_AUT를 보고
-        사람이 아무것도 하지 않았는데 "로그인 완료"로 판정한다. 새 로그인을
-        시작하기 전에 깨끗이 지운다.
+        낡은 NID_AUT를 남겨 두면 wait_for_manual_login()이 그것을 보고 사람이
+        아무것도 하지 않았는데 "로그인 완료"로 판정한다 — 그래서 지워야 한다.
+
+        그런데 통째로 비우면 NNB 같은 기기 식별 쿠키까지 날아가고, 네이버는
+        그 다음 로그인을 처음 보는 기기에서의 로그인으로 본다. 보호조치가
+        거기서 나온다 (2026-09-11). 지울 것과 남길 것을 구분한다.
         """
-        await self._context.clear_cookies()
+        for name in AUTH_COOKIES:
+            await self._context.clear_cookies(name=name)
 
     async def _is_logged_in(self) -> bool:
         """실제로 로그인 상태인지 **네이버에게** 묻는다.
@@ -280,75 +352,74 @@ class BrowserSession:
         쿠키 존재는 답이 될 수 없다. 저장된 세션을 매번 컨텍스트에 다시 실어
         주므로 NID_AUT는 네이버가 세션을 만료시킨 뒤에도 로컬에 남는다 — 즉
         "쿠키가 있는가"는 구조적으로 만료를 탐지할 수 없다. 2026-09-10에
-        실제로 그 상태로 실행이 끝까지 돌았고(공감 21건 전부 401 거부), 더
-        나쁘게는 앱도 tools/login.py도 "이미 로그인되어 있습니다"라고 답해
-        재로그인 자체가 막혔다. 레거시 결함 3이 다른 얼굴로 돌아온 것이다.
+        실제로 그 상태로 실행이 끝까지 돌았다 (공감 21건 전부 401 거부).
+
+        그렇다고 로그인 페이지에 물어서도 안 된다. 2026-09-11까지 그렇게 했고,
+        "로그인 폼이 보이면 로그아웃"이라는 판정이 살아 있는 세션까지 로그아웃으로
+        몰았다. 그 대가가 두 겹이었다 — 멀쩡한 세션을 버리고 매 실행 자동
+        비밀번호 입력으로 가서 계정 보호 조치를 불렀고, 사람이 손으로 로그인을
+        끝낸 직후에도 같은 판정이 False라서 SessionExpired로 터졌다.
 
         판정은 두 단계다:
-          1. 쿠키가 아예 없으면 볼 것도 없이 로그아웃이다. 로그인 페이지는
-             가장 방어가 심한 화면이므로(결정 3) 갈 이유가 없으면 가지 않는다.
-          2. 있으면 로그인 페이지를 열어 본다. 세션이 살아 있으면 네이버가
-             우리를 url 파라미터(www.naver.com)로 돌려보낸다. 이것은
-             _login()이 로그인 성공을 판정할 때 쓰는 것과 **같은 신호**다 —
-             새 신호를 지어내지 않는다. 폼을 건드리지도, 아무것도 입력하지도
-             않는다.
+          1. 쿠키가 아예 없으면 볼 것도 없이 로그아웃이다. 네트워크를 타지 않는다.
+          2. 있으면 **로그인해야만 볼 수 있는 페이지**(LOGIN_PROBE_URL)를 연다.
+             세션이 죽었으면 네이버가 서버측 302로 nid 로그인 폼에 데려다
+             놓는다. 로그인 폼에 도착했다 = 로그아웃. 명확한 한 방향 신호다.
+
+        판정 불가(타임아웃 등)는 로그아웃으로 친다. 반대로 틀리면 실행 전체가
+        로그아웃 상태로 돌며 공감이 전부 401로 거부된다 — 2026-09-10 사고가
+        정확히 그것이었다. 틀린 쪽의 대가가 훨씬 싸다: 필요 없는 로그인 창이
+        한 번 열릴 뿐이다.
         """
         if not await self._has_auth_cookie():
             return False
-        await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        try:
+            await self.page.goto(
+                LOGIN_PROBE_URL,
+                wait_until="domcontentloaded",
+                timeout=LOGIN_PROBE_TIMEOUT_MS,
+            )
+        except PlaywrightTimeout:
+            return False
         return LOGIN_HOST not in self.page.url
 
     async def _login(
         self,
         account: str,
-        password: str,
         *,
         on_challenge: Callable[[str], None] | None = None,
         manual_timeout_s: float = MANUAL_LOGIN_TIMEOUT_S,
     ) -> None:
-        """자동 입력으로 로그인하고, 막히면 그 창을 운영자에게 넘긴다.
+        """로그인 창을 열어 운영자에게 넘긴다. 자격증명을 대신 입력하지 않는다.
 
-        예전에는 막힌 화면을 분류해 곧장 예외로 올렸고, open()의 except가
-        close()로 창을 닫았다 — 운영자는 눈앞의 추가 확인 문제를 풀 기회조차
-        없었다. 그래서 tools/login.py가 따로 필요했다. 이제는 창을 열어둔 채
-        기다린다. 문제를 푸는 것은 언제나 사람이다.
+        2026-09-11 이전에는 아이디/비밀번호를 자동 입력했다. 그 동작이 바로
+        네이버의 "보안을 위해 추가 확인" 화면을 부르는 것이고(2026-08-31 실측),
+        그 화면은 어차피 사람이 풀어야 한다. 즉 자동 입력이 계정에 남기는 것은
+        "실패한 자동 로그인 시도" 기록뿐이고, 그것이 반복되면 보호 조치로
+        이어진다 — 2026-09-11 실행 로그가 3분 간격 연속 자동 로그인을 보여
+        준다. 계정 안전은 1급 요구사항이므로(설계 원칙) 시도 자체를 하지
+        않는다. 운영자 결정, 2026-09-11.
+
+        세션이 살아 있으면 이 함수는 호출되지도 않는다 (결정 3). 여기까지
+        왔다는 것은 세션이 정말 없거나 만료됐다는 뜻이고, 그때 필요한 것은
+        사람이 한 번 로그인해 주는 일이다.
+
+        account는 안내에만 쓴다 — 창에 입력하지 않는다.
         """
         say = on_challenge or (lambda _message: None)
         await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
-        if password:
-            # fill()은 탐지되기 쉽다. insert_text는 키 이벤트 없이 값을 넣는다
-            # (레거시의 클립보드 붙여넣기와 같은 효과).
-            await self.page.click(LOGIN_ID)
-            await self.page.keyboard.insert_text(account)
-            await self.page.click(LOGIN_PW)
-            await self.page.keyboard.insert_text(password)
-
-            await self.page.locator(LOGIN_BUTTON).locator("visible=true").first.click()
-
-            # click()은 그 클릭이 일으킨 이동을 기다려 주지 않고,
-            # wait_for_load_state("domcontentloaded")는 현재 문서가 이미 로드돼
-            # 있으면 즉시 반환한다 — 그래서 전이가 끝나기 전의 로그인 폼을 읽고
-            # 실패로 오판했다(2026-08-31 관측). 로그인 호스트를 벗어날 때까지
-            # 기다리고, 끝내 벗어나지 못하면 그 화면을 분류한다.
-            try:
-                await self.page.wait_for_url(
-                    lambda url: LOGIN_HOST not in url,
-                    timeout=LOGIN_TRANSITION_TIMEOUT_MS,
-                )
-            except PlaywrightTimeout:
-                pass
-        # 비밀번호가 없으면 폼을 건드리지 않는다. 빈 값을 밀어 넣어 봐야
-        # 네이버에 실패한 로그인 시도만 남는다 — 창만 열어 주면 된다.
-
+        # 왜 로그인 화면이 필요한지는 그대로 분류해 알려준다. 캡차인데 2차
+        # 인증이라고 안내하면 운영자가 엉뚱한 곳을 본다. 자동 입력을 하지
+        # 않으므로 보통은 평범한 로그인 폼이고, 그때는 일반 안내가 나간다.
         body_text = await self.page.inner_text("body")
-        failure = classify_login_page(self.page.url, body_text)
-        if failure is not None:
-            # 왜 막혔는지는 그대로 분류해 운영자에게 알려주고(캡차인데 2차
-            # 인증이라고 안내하면 엉뚱한 곳을 보게 된다), 창은 열어 둔다.
-            say(challenge_message(failure))
-            if not await self.wait_for_manual_login(timeout_s=manual_timeout_s):
-                raise failure(f"로그인이 확인되지 않았습니다. 현재 주소: {self.page.url}")
+        failure = classify_login_page(self.page.url, body_text) or LoginError
+        say(f"[{account}] {challenge_message(failure)}")
+
+        if not await self.wait_for_manual_login(
+            timeout_s=manual_timeout_s, notify=say
+        ):
+            raise failure("로그인이 확인되지 않았습니다 (창이 닫혔거나 시간이 지났습니다).")
 
         if not await self._is_logged_in():
             raise SessionExpired("로그인 직후 세션이 확인되지 않았습니다.")

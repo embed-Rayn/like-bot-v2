@@ -36,9 +36,10 @@ the live site on 2026-08-31 — search → RSS → session reuse → real 공감
 `tools/dryrun.py` and the desktop UI, single- and multi-keyword. Web/Linux is still deferred
 (build order 7).
 
-Logging in is done from the app: type 아이디/비밀번호 once and press 실행. If Naver puts up
-its 추가 확인 screen, the browser window stays open and waits for you — see "Live-site facts".
-`tools/login.py <네이버ID>` does the same thing from the CLI.
+Logging in is done by a person, never by the app: type the 네이버 ID and press 실행, and if
+the saved session is gone a browser window opens for you to log in yourself. The app does not
+type credentials — that is what triggered Naver's 추가 확인 and the account protection
+(2026-09-11, see "Live-site facts"). `tools/login.py <네이버ID>` does the same from the CLI.
 
 ```
 engine/    search · posts(RSS) · session · like · runner · ratelimit · history · safety · runlog
@@ -156,21 +157,51 @@ change fails a test instead of a run.
 - **Login page.** `#id` / `#pw` unchanged. The submit button is `#loginBtn_column` /
   `#loginBtn_row` — rendered twice for the responsive layout, so click the visible one. The
   old `.btn_login` no longer exists.
-- **Automated credential entry triggers a challenge.** Typing ID/PW with Playwright lands on
-  "보안을 위해 추가 확인" (an image challenge). Do not try to defeat it — that is
-  bot-detection evasion and it risks the account. Hand it to the operator instead:
-  `_login()` classifies why it stalled, reports that through `on_challenge`, and waits on
-  the open window (`MANUAL_LOGIN_TIMEOUT_S`, 300s) for a person to finish. Only a timeout
-  raises. So login has three shapes, and the desktop UI covers all of them:
+- **앱은 자격증명을 입력하지 않는다 — 자동 로그인 폐지 (운영자 결정, 2026-09-11).**
+  Playwright로 아이디/비밀번호를 타이핑하면 네이버가 "보안을 위해 추가 확인"(이미지
+  문제)을 띄운다. 그것을 프로그램으로 뚫으려 드는 것은 봇 탐지 회피이고 계정을 건다.
+  그런데 어차피 그 화면은 사람이 푼다 — 즉 **자동 입력이 계정에 남기는 것은 "실패한
+  자동 로그인 시도" 기록뿐이고, 그게 쌓이면 보호 조치가 된다.** 2026-09-11 실행 로그가
+  3분 간격 연속 자동 로그인을 보여 준다. 그래서 시도 자체를 하지 않는다.
   | 상황 | 동작 |
   | --- | --- |
   | 세션 유효 | 로그인 페이지를 아예 거치지 않는다 (결정 3) |
-  | 세션 없음 + 비밀번호 있음 | 자동 입력 → 막히면 창을 열어둔 채 사람을 기다린다 |
-  | 세션 없음 + 비밀번호 없음 | 자동 입력을 건너뛰고 창만 열어 준다 |
+  | 세션 없음/만료 | 로그인 창만 열고 사람을 기다린다 (아래 "대기의 끝") |
 
-  The UI's 비밀번호 field feeds `keyring`, never the repo. A missing password is not an
-  error — it just means the third row. `tools/login.py` is the CLI form of that third row,
-  still useful for bootstrapping without opening the app.
+  UI에 비밀번호 칸이 없고 `keyring`도 쓰지 않는다 — 쓰지 않는 자격증명 저장소를 남겨
+  두면 운영자는 그 칸이 쓰인다고 믿고 입력한다. `_login()`은 막힌 화면을 여전히
+  분류해 `on_challenge`로 알린다(캡차인지 2차 인증인지에 따라 창에서 할 일이 다르다).
+  타임아웃만 예외를 올린다. `tools/login.py`는 앱을 열지 않고 같은 일을 하는 CLI다.
+- **로그인 여부는 로그인 페이지에 물어서는 안 된다 (2026-09-11 사고).** `_is_logged_in()`은
+  `LOGIN_PROBE_URL`(`https://blog.naver.com/MyBlog.naver` — 로그인해야만 볼 수 있는
+  페이지)을 열어 보고, nid 로그인 폼으로 튕기면 로그아웃으로 판정한다. 예전에는
+  로그인 페이지 자체를 열고 "아직 nid인가"로 판정했는데, 그 질문에는 답이 없다 —
+  로그인 폼이 보이는 것은 로그인/로그아웃 양쪽에서 다 일어난다. 실측(2026-09-11,
+  로그아웃)에서 두 주소는 로그아웃 상태에서 구분되지 않았고, 차이는 로그인 상태에서만
+  드러난다. 대가는 두 겹이었다: **멀쩡한 세션까지 로그아웃으로 몰아 버려
+  `_discard_stale_session()`이 지우고 매 실행 자동 로그인으로 갔고(→ 계정 보호 조치),
+  사람이 손으로 로그인을 끝낸 직후에도 같은 판정이 False라서
+  `SessionExpired("로그인 직후 세션이 확인되지 않았습니다")`로 터졌다**
+  (run-20260911-231421). 판정 불가(타임아웃)는 로그아웃으로 친다 — 반대로 틀리면
+  실행 전체가 로그아웃으로 돌며 공감이 전부 401로 거부된다(2026-09-10 사고).
+  `tests/test_login_probe_contract.py`가 이 주소가 아직 로그인 필수인지 감시한다.
+- **기기 식별 쿠키를 버리면 매번 "처음 보는 기기"가 된다 (2026-09-11).** 자동 입력을
+  없앤 뒤에도 보호조치가 떴고, 원인은 입력이 아니라 `_discard_stale_session()`이었다.
+  그것이 `clear_cookies()`를 인자 없이 불러 쿠키를 통째로 비웠는데, 저장된 세션에는
+  인증 쿠키만 있는 게 아니다 — 실측하면 14개 중 대부분이 `NNB`·`NAC`·`NACT`·`BUC`·
+  `nid_inf` 같은 **기기/방문자 식별** 쿠키다. 그것까지 지우면 다음에 열리는 로그인
+  창에 네이버가 이 브라우저를 알아볼 단서가 하나도 없고, 새 기기 로그인은 곧 추가
+  확인이다. 지울 것은 `AUTH_COOKIES`(`NID_AUT`, `NID_SES`)뿐이다 — 낡은 NID_AUT를
+  남기면 `wait_for_manual_login()`이 사람이 손대기도 전에 "완료"로 판정하므로 그 둘은
+  반드시 지워야 하고, 나머지는 반드시 남겨야 한다. `navigator.webdriver`를 감추는 식의
+  탐지 회피는 하지 않는다 — 그건 계정을 거는 일이다. 기기 신원을 **버리지 않는 것**은
+  회피가 아니라 평범한 브라우저처럼 구는 것이다.
+- **대기의 끝은 타이머가 아니라 사람이다 (2026-09-11).** `MANUAL_LOGIN_TIMEOUT_S`가
+  300초였고, 운영자가 보호조치 본인확인을 하는 도중에 그 타이머가 창을 닫았다
+  (`bootstrap_manual`의 `finally: close()`). 지금은 1800초이고, 그보다 중요한 것은
+  `wait_for_manual_login()`이 `page.is_closed()`를 함께 본다는 점이다 — 사람이 창을
+  닫으면 즉시 포기로 끝난다. 그래서 타이머를 길게 잡아도 매달리지 않는다. 60초마다
+  남은 시간을 `notify`로 알린다(말없이 멈춘 창은 죽은 창과 구별되지 않는다).
 - **Login-failure text.** The plain login form always carries a "일회용 번호 로그인" link, so
   that phrase must never be used as a two-factor hint — it makes every failure look like 2FA.
 - **공감 실패는 단계까지 남는다.** `TIMEOUT` 하나가 페이지 로딩 · 버튼 탐색 · 버튼 상태
@@ -221,6 +252,17 @@ change fails a test instead of a run.
   빗나가는 날 다시 거짓 성공이 된다.
   참고: `_face` 클릭 하나로 공감 POST가 나간다. 레이어의 항목을 따로 누를 필요는 없다.
 
+- **401은 두 가지 뜻이다 — 구분하지 않으면 헛수고를 시킨다 (2026-09-12).** 공감 API가
+  401을 돌려주면 예전에는 무조건 `NOT_LOGGED_IN`이었고 화면에 "로그인 풀림 — 중단"이
+  떴다. 그런데 그 안내가 맞는 경우는 절반뿐이다: **우리 세션이 죽었으면** 다시
+  로그인하면 되지만, **세션은 멀쩡한데 공감만 거부됐으면** 다시 로그인해도 아무 소용이
+  없다(계정 쪽 제한이라 사람이 네이버에서 풀어야 한다). 구분하지 않으면 운영자가 효과
+  없는 재로그인을 반복하게 된다. 지금은 401을 받으면 `session_still_alive(page)`가
+  `_is_logged_in()`과 **같은 신호**로 되물어 본 뒤 `classify_rejection()`이 가른다:
+  죽었으면 `NOT_LOGGED_IN` + "세션 만료 — 다시 로그인", 살아 있으면 `BLOCKED` +
+  "세션은 살아 있음 — 계정 제한 의심". 둘 다 실행을 멈추는 것은 같고, 달라지는 것은
+  운영자가 다음에 할 일이다. 확신이 없을 때(프로브 타임아웃)는 "살아 있다"로 친다 —
+  멀쩡한 세션을 죽었다고 단정해 재로그인을 시키는 것이 바로 보호조치를 부르는 행동이다.
 - **로그인 판정은 네이버에게 묻는다 (2026-09-10 수정).** 예전 `_is_logged_in()`은
   `NID_AUT` 쿠키가 있으면 로그인으로 봤다. 그런데 그 쿠키는 **우리가 저장된 세션에서
   매번 다시 주입하는 값**이라, 네이버가 서버에서 세션을 만료시켜도 로컬에는 그대로
@@ -310,6 +352,21 @@ Two hooks the build needs and PyInstaller cannot infer (verified absent from
 pyinstaller-hooks-contrib 6.22): `collect_all("playwright")` for the driver, and
 `collect_entry_point("keyring.backends")` + `keyring.backends.Windows` — keyring resolves
 backends lazily, so without it the exe fails at password lookup, not at import.
+
+## Store 파이썬은 로그·세션을 다른 곳에 쓴다 (2026-09-12)
+
+`python -m desktop.app`을 **Microsoft Store 파이썬**
+(`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`)으로 돌리면 Windows가
+`%LOCALAPPDATA%` **쓰기**를 아래로 리디렉션한다:
+
+```
+%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\Local\like-bot-v2```
+
+읽기는 실제 경로로 흘러내려가므로 세션은 멀쩡히 읽히는데 **로그만 저 아래에
+쌓인다.** 실행이 분명히 있었는데 `%LOCALAPPDATA%\like-bot-v2\logs\`에는 아무것도
+없어서 진단이 한 바퀴 돈 적이 있다. 그래서 `_run_engine()`이 실행 시작에
+`실행 기록: {경로}` 한 줄을 찍는다 — 로그를 달라고 할 때는 그 줄을 보면 된다.
+배포본(PyInstaller exe)에는 이 문제가 없다.
 
 ## Security rules
 

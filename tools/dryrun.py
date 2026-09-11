@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import getpass
 
 import httpx
 
@@ -50,7 +49,9 @@ async def main_async(account: str, keyword: str, blogs: int) -> None:
         print(f"  {blog_id:24s} 최신글 {log_nos}")
 
     session = BrowserSession(paths)
-    await session.open(account, lambda: getpass.getpass(f"{account} 비밀번호: "))
+    # 비밀번호를 묻지 않는다 — 세션이 없으면 로그인 창이 열리고 사람이 직접 한다
+    # (engine/session.py의 _login, 2026-09-11 자동 입력 폐지).
+    await session.open(account, on_challenge=print)
     print("로그인 확인됨. 공감 버튼을 찾습니다 (클릭하지 않습니다).")
 
     # I4: 글 로드도 로그인된 브라우저로 하는 요청이므로 실제 실행과 같은

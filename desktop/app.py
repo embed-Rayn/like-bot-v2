@@ -13,7 +13,6 @@ from pathlib import Path
 from types import TracebackType
 
 import httpx
-import keyring
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QCloseEvent, QDesktopServices
 from PyQt6.QtWidgets import (
@@ -53,14 +52,13 @@ from engine.models import TOTAL_COUNT_CAP, LikeOutcome
 from engine.paths import AppPaths
 from engine.posts import PostsClient
 from engine.ratelimit import RateLimiter
-from engine.runlog import open_run_log
+from engine.runlog import log_location_notice, open_run_log
 from engine.runner import Runner
 from engine.safety import BlockDetector
 from engine.search import SearchClient
 from engine.session import BrowserSession
 from engine.version import __version__
 
-KEYRING_SERVICE = "like-bot-v2"
 PANEL_COUNT = 4
 
 # R17: stop_reason은 엔진 내부 값 그대로 두면 운영자가 알아볼 수 없다
@@ -104,8 +102,6 @@ class MainWindow(QMainWindow):
         self._participating: set[str] = set()
 
         self.account_input = QLineEdit()
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
 
         start, end = default_dates()
         self.start_date_input = QLineEdit(start)
@@ -141,7 +137,6 @@ class MainWindow(QMainWindow):
 
         form = QFormLayout()
         form.addRow("네이버 ID", self.account_input)
-        form.addRow("비밀번호", self.password_input)
         form.addRow("기간 시작", self.start_date_input)
         form.addRow("기간 종료", self.end_date_input)
         form.addRow("제외 단어", self.exclude_input)
@@ -279,16 +274,10 @@ class MainWindow(QMainWindow):
             )
             return
 
-        password = self.password_input.text()
-        if password:
-            keyring.set_password(KEYRING_SERVICE, config.account, password)
-            self.password_input.clear()
-        # 비밀번호가 없어도 막지 않는다. 설계 결정 3의 핵심은 세션 재사용인데,
-        # 예전 게이트는 세션이 멀쩡해도 저장된 비밀번호가 없으면 실행을
-        # 거부해서 그 설계를 화면에서 봉쇄하고 있었다. 세션이 살아 있으면
-        # 로그인 자체를 하지 않고, 없으면 로그인 창이 열려 직접 하면 된다
-        # (engine/session.py의 _login — 빈 비밀번호는 자동 입력을 건너뛴다).
-        stored = keyring.get_password(KEYRING_SERVICE, config.account) or ""
+        # 비밀번호를 묻지 않는다 (2026-09-11). 앱은 자격증명을 대신 입력하지
+        # 않으므로 받아 둘 이유가 없다 — 자동 입력이 네이버의 추가 확인 화면과
+        # 계정 보호 조치를 부르는 바로 그 단계였다 (engine/session.py의 _login).
+        # 세션이 살아 있으면 로그인 자체를 하지 않고, 없으면 로그인 창이 열린다.
 
         self._save_config(config)
         self._stop_requested = False
@@ -315,9 +304,9 @@ class MainWindow(QMainWindow):
         self.stop_button.setStyleSheet(STOP_RUNNING_STYLE)
         self.summary_label.setText("실행 중…")
 
-        self.bridge.start(lambda emit: self._run_engine(config, stored, emit))
+        self.bridge.start(lambda emit: self._run_engine(config, emit))
 
-    async def _run_engine(self, config: RunConfig, password: str, emit_ui) -> object:
+    async def _run_engine(self, config: RunConfig, emit_ui) -> object:
         # 실행 기록은 브라우저를 켜기 전부터 남긴다. 로그인이 막혀 중단된
         # 실행이야말로 나중에 들여다볼 이유가 크고, console=False로 빌드한
         # 배포본은 창을 닫고 나면 물어볼 데가 없다.
@@ -329,6 +318,11 @@ class MainWindow(QMainWindow):
                 # 공감을 못 누르는 것은 본말전도다.
                 runlog.write(event)
                 emit_ui(event)
+
+            # 실행 기록이 실제로 어디에 쓰였는지 화면에 남긴다. Store
+            # 파이썬은 %LOCALAPPDATA% 쓰기를 리디렉션하므로 경로를 그대로
+            # 믿으면 안 된다 — engine/runlog.py의 log_location_notice 참고.
+            emit(LogLine("", log_location_notice(runlog.path)))
 
             # 배포본은 chromium을 함께 싣지 않는다. 없으면 session.open()이
             # playwright의 "Executable doesn't exist" 예외로 죽으므로, 창을 열기
@@ -347,7 +341,6 @@ class MainWindow(QMainWindow):
             # 안내가 없으면 운영자는 멈춰 선 창 앞에서 이유를 모른다.
             await session.open(
                 config.account,
-                lambda: password,
                 on_challenge=lambda message: emit(LogLine("", message)),
             )
 

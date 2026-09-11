@@ -36,7 +36,7 @@ async def test_open_closes_browser_and_playwright_when_login_fails(tmp_path, mon
     async def fake_is_logged_in() -> bool:
         return False
 
-    async def fake_login(account: str, password: str, **_kwargs) -> None:
+    async def fake_login(account: str, **_kwargs) -> None:
         raise BadCredentials("forced failure for test")
 
     monkeypatch.setattr(session, "_is_logged_in", fake_is_logged_in)
@@ -53,7 +53,7 @@ async def test_open_closes_browser_and_playwright_when_login_fails(tmp_path, mon
     monkeypatch.setattr(session, "close", spy_close)
 
     with pytest.raises(BadCredentials):
-        await session.open("test_account", lambda: "irrelevant", headless=True)
+        await session.open("test_account", headless=True)
 
     # open()이 스스로 만든 브라우저/드라이버가 실제로 정리됐는지 확인한다.
     assert captured["browser"] is not None, "테스트가 실제로 브라우저를 기동했는지 확인"
@@ -95,7 +95,7 @@ async def test_open_stops_playwright_driver_when_browser_launch_fails(tmp_path, 
     monkeypatch.setattr("engine.session.async_playwright", lambda: _FakeManager())
 
     with pytest.raises(RuntimeError):
-        await session.open("test_account", lambda: "irrelevant", headless=True)
+        await session.open("test_account", headless=True)
 
     assert stop_calls, "브라우저 기동 실패 시 pw.stop()이 호출되지 않음 — 드라이버가 남는다"
     assert session._browser is None
